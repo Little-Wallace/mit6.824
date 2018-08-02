@@ -54,7 +54,18 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+type MessageType int
+const (
+	_ MessageType = iota
+	MsgStop
+	MsgPropose
+	MsgHeartbeat
+	MsgAppendReply
+	MsgAppend
+)
+
 type AppendMessage struct {
+	MsgType			MessageType
 	Term			int
 	From			int32
 	To 				int
@@ -64,7 +75,6 @@ type AppendMessage struct {
 	Entries			[]Entry
 	Success			bool
 }
-
 
 type AppendReply struct {
 	Term        int
@@ -129,14 +139,6 @@ const (
 	Follower
 )
 
-type MsgType int
-const (
-	_ MsgType = iota
-	MsgStop
-	MsgPropose
-	MsgHeartbeat
-	MsgCampaign
-)
 
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -155,7 +157,6 @@ type Raft struct {
 	lastHeartBeat int32
 	lastElection int32
 	applySM    chan ApplyMsg
-	propose	   chan MsgType
 	msgChan    chan AppendMessage
 	argsChan   chan RequestVoteArgs
 	raftLog	  UnstableLog
@@ -180,15 +181,9 @@ func (rf *Raft) reset(term int)  {
 
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
-	isLeader := false
-	//if atomic.LoadInt32(&rf.leader) == int32(rf.me) {
-	if rf.leader == int32(rf.me) {
-		isLeader = true
-		fmt.Printf("%d Leader: %d, leader %d, state %d\n", rf.me, rf.term, rf.leader, rf.state)
-	} else {
-		fmt.Printf("%d NoLeader: %d, leader %d, state %d\n", rf.me, rf.term, rf.leader, rf.state)
-	}
-    return rf.term, isLeader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+    return rf.term, rf.state == Leader
 }
 
 
@@ -226,28 +221,6 @@ func (rf *Raft) readPersist(data []byte) {
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	d.Decode(rf.raftLog)
-	//d.Decode(rf.me)
-	//d.Decode(rf.term)
-	//d.Decode(rf.vote)
-	//d.Decode(rf.leader)
-	//d.Decode(rf.state)
-	//d.Decode(rf.rdElectionTimeout)
-	//d.Decode(rf.lastHeartBeat)
-	//d.Decode(rf.nextIndex)
-	//d.Decode(rf.matchIndex)
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
 }
 
 
@@ -271,24 +244,96 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	fmt.Printf("%d(%d) AccessRequest vote for: %d(%d) at %d\n", rf.me, rf.term, args.From, args.Term, rf.ts)
-	defer fmt.Printf("%d Endrequest Vote End\n", rf.me)
 	rf.lastElection = 0
-	reply.Term = rf.term
 	if rf.term > args.Term {
 		fmt.Printf("%d %d reject smaller term: %d\n", rf.me, rf.term, args.Term)
 		reply.VoteGranted = false
+		reply.Term = rf.term
 		return
 	}
+	reply.Term = args.Term
 	if ((rf.leader == -1 && rf.vote == -1) || rf.vote == args.From || rf.term < args.Term) &&
 		rf.raftLog.IsUpToDate(args.LastLogIndex, args.LastLogTerm) {
 		fmt.Printf("%d agree vote for: %d\n", rf.me, args.From)
 		rf.vote = args.From
 		reply.VoteGranted = true
-		rf.BecomeFollower(args.Term, -1)
+		rf.becomeFollower(args.Term, -1)
 		return
 	}
 	fmt.Printf("%d(%d) reject vote for: %d(%d), has voted to %d\n", rf.me, rf.term, args.From, args.Term, rf.vote)
 	reply.VoteGranted = false
+}
+
+func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	fmt.Printf("%d(%d) access append entries from %d(%d)\n", rf.me, rf.term, args.From, args.Term)
+	if !rf.handleHeartbeat(args.From, args.Term, args.MsgType) {
+		reply.Success = false
+		reply.To = rf.me
+		return
+	}
+
+	defer fmt.Printf("%d: EndAppendEntries \n", rf.me, )
+
+	index := len(rf.raftLog.Entries)
+	if args.PrevLogIndex >= index {
+		fmt.Printf("%d(index: %d) reject append entries from %d(prev index: %d)\n",
+			rf.me, index, args.From, args.PrevLogIndex)
+		reply.Success = false
+		reply.Commited = index - 1
+		//reply.Commited =
+		reply.Term = rf.term
+		return
+	}
+	if rf.raftLog.Entries[args.PrevLogIndex].Term == args.PrevLogTerm {
+		lastIndex := args.PrevLogIndex
+		for idx, e := range args.Entries {
+			e.Index = idx + args.PrevLogIndex + 1
+			e.Term = args.Term
+			if e.Index >= index {
+				rf.raftLog.Entries = append(rf.raftLog.Entries, e)
+			} else {
+				rf.raftLog.Entries[e.Index] = e
+			}
+			lastIndex = e.Index
+		}
+		reply.Success = true
+		rf.raftLog.commited = MinInt(args.Commited, lastIndex)
+		if rf.raftLog.applied < rf.raftLog.commited && rf.raftLog.commited < len(rf.raftLog.Entries) {
+			for _, e := range rf.raftLog.Entries[rf.raftLog.applied + 1 : rf.raftLog.commited + 1] {
+				//rf.applySM <- rf.createApplyMsg(e)
+				fmt.Printf("%d Apply entre : term: %d, index: %d\n", rf.me, e.Term, e.Index)
+			}
+		}
+		rf.raftLog.applied = rf.raftLog.commited
+		reply.Term = rf.term
+		reply.Commited = lastIndex
+	} else {
+		reply.Success = false
+		reply.Term = rf.term
+		reply.Commited = index - 1
+		e := rf.raftLog.Entries[args.PrevLogIndex]
+		fmt.Printf("%d(index: %d, term: %d) reject append entries from %d(prev index: %d, term: %d)\n",
+			rf.me, e.Index, e.Term, args.From, args.PrevLogIndex, args.PrevLogTerm)
+	}
+}
+
+func (rf *Raft) HeartBeat(msg *AppendMessage, reply *AppendReply)  {
+	if !rf.handleHeartbeat(msg.From, msg.To, msg.MsgType) {
+		reply.Success = false
+		reply.To = rf.me
+		reply.Term = rf.term
+		return
+	}
+	reply.Success = true
+	reply.To = rf.me
+	reply.Term = msg.Term
+	rf.term = msg.Term
+	if msg.Commited > rf.raftLog.commited {
+		rf.raftLog.commited = msg.Commited
+	}
+	return
 }
 
 //
@@ -326,13 +371,11 @@ func (rf *Raft) sendRequestVote(args* RequestVoteArgs) bool {
 	fmt.Printf("send request vote from %d to %d  at %d\n", args.From, args.To, ts)
 	ok := rf.peers[args.To].Call("Raft.RequestVote", args, &reply)
 	reply.To = args.To
-	if !ok {
-		time.Sleep(50 * time.Millisecond)
-		ok = rf.peers[args.To].Call("Raft.RequestVote", args, &reply)
-	}
 	if ok {
+		fmt.Printf("send request vote from %d to %d ok\n", args.From, args.To)
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+		fmt.Printf("send request vote from %d to %d get lock\n", args.From, args.To)
 		ts = rf.ts
 		rf.handleVoteReply(&reply)
 	}
@@ -345,7 +388,7 @@ func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
 	fmt.Printf("%d(%d): receive vote reply from %d(%d), accept: %t at %d\n",
 		rf.me, rf.term, reply.To, reply.Term, reply.VoteGranted, rf.ts)
 	if reply.Term > rf.term {
-		rf.BecomeFollower(rf.term, -1)
+		rf.becomeFollower(rf.term, -1)
 	}
 	if reply.VoteGranted && rf.state == Candidate {
 		rf.votes[reply.To] = 1
@@ -361,18 +404,71 @@ func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
 		}
 		if accept >= quorum {
 			// become leader
-			rf.BecomeLeader()
-			rf.LeaderBroadCast()
+			rf.becomeLeader()
+			rf.leaderBroadCast()
 		} else if reject == len(rf.peers) - quorum {
-			rf.BecomeFollower(rf.term, -1)
+			rf.becomeFollower(rf.term, -1)
 		}
 	} else {
 		rf.votes[reply.To] = 0
-		if reply.Term > rf.term {
-			rf.BecomeFollower(reply.Term, -1)
-		}
 	}
 	fmt.Printf("%d(%d): receive vote end\n", rf.me, rf.term)
+}
+
+//
+// the service using Raft (e.g. a k/v server) wants to start
+// agreement on the next command to be appended to Raft's log. if this
+// server isn't the leader, returns false. otherwise start the
+// agreement and return immediately. there is no guarantee that this
+// command will ever be committed to the Raft log, since the leader
+// may fail or lose an election. even if the Raft instance has been killed,
+// this function should return gracefully.
+//
+// the first return value is the index that the command will appear at
+// if it's ever committed. the second return value is the current
+// term. the third return value is true if this server believes it is
+// the leader.
+//
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	if rf.leader != int32(rf.me) {
+		return len(rf.raftLog.Entries), rf.term, false
+	}
+	bytesBuffer := bytes.NewBuffer([]byte{})
+	rf.mu.Lock()
+	binary.Write(bytesBuffer, binary.BigEndian, command)
+	index := len(rf.raftLog.Entries)
+	e := Entry{bytesBuffer.Bytes(), rf.term, index}
+	var msg AppendMessage
+	msg.MsgType = MsgPropose
+	msg.Entries = append(msg.Entries, e)
+	rf.mu.Unlock()
+	rf.msgChan <- msg
+	//accept := rf.sendAppendEntries()
+	for t := 0; t < 20; t ++{
+		time.Sleep(time.Millisecond * 100)
+		if rf.raftLog.applied >= index {
+			return index, rf.term, true
+		}
+	}
+	return index, rf.term, rf.state == Leader
+}
+
+func (rf *Raft) createApplyMsg(e Entry) ApplyMsg {
+	var applyMsg ApplyMsg
+	var tmp int
+	bytesBuffer := bytes.NewBuffer(e.Data)
+	binary.Read(bytesBuffer, binary.BigEndian, &tmp)
+	applyMsg.CommandIndex = e.Index
+	applyMsg.Command = tmp
+	return applyMsg
+}
+
+func MinInt(a int, b int) int {
+	if a < b {
+		return a
+	} else {
+		return b
+	}
 }
 func (rf *Raft) sendAppendEntries(msg *AppendMessage) bool {
 	var reply AppendReply
@@ -392,13 +488,12 @@ func (rf *Raft) sendAppendEntries(msg *AppendMessage) bool {
 
 func (rf *Raft) handleAppendReply(msg* AppendMessage, reply* AppendReply) {
 	fmt.Printf("%d handleAppendReply from %d at %d\n", rf.me, msg.To, rf.ts)
+	if !rf.handleHeartbeat(int32(msg.To), reply.Term, MsgAppendReply) {
+		return
+	}
 	rf.actives[msg.To] = true
 	if !reply.Success {
 		fmt.Printf("%d(%d) handleAppendReply failed, from %d(%d)\n", rf.me, rf.term, msg.To, msg.Term)
-		if msg.Term < reply.Term {
-			rf.BecomeFollower(reply.Term, -1)
-			return
-		}
 		rf.nextIndex[reply.To] --
 		msg := rf.createMessage(reply.To)
 		msg.Entries, _ = rf.getUnsendEntries(rf.nextIndex[reply.To])
@@ -423,7 +518,8 @@ func (rf *Raft) handleAppendReply(msg* AppendMessage, reply* AppendReply) {
 		if rf.raftLog.commited < commits[quorum] {
 			rf.raftLog.commited = commits[quorum]
 			for _, e := range rf.raftLog.GetUnApplyEntry() {
-				rf.applySM <- rf.createApplyMsg(e)
+				//rf.applySM <- rf.createApplyMsg(e)
+				fmt.Printf("leader: %d Apply entre : term: %d, index: %d\n", rf.me, e.Term, e.Index)
 				rf.raftLog.applied += 1
 			}
 			fmt.Printf("%d apply message\n", rf.me)
@@ -432,110 +528,42 @@ func (rf *Raft) handleAppendReply(msg* AppendMessage, reply* AppendReply) {
 	}
 }
 
-//
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-//
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	if rf.leader != int32(rf.me) {
-		return len(rf.raftLog.Entries), rf.term, false
-	}
-	bytesBuffer := bytes.NewBuffer([]byte{})
-	rf.mu.Lock()
-	binary.Write(bytesBuffer, binary.BigEndian, command)
-	Index := len(rf.raftLog.Entries)
-	e := Entry{bytesBuffer.Bytes(), rf.term, Index}
-	idx := len(rf.raftLog.Entries)
-	rf.raftLog.Entries = append(rf.raftLog.Entries, e)
-	rf.mu.Unlock()
-	rf.propose <- MsgPropose
-	//accept := rf.sendAppendEntries()
-	for t := 0; t < 20; t ++{
-		time.Sleep(time.Millisecond * 100)
-		if rf.raftLog.applied >= idx {
-			return idx, rf.term, true
-		}
-	}
-	return idx, rf.term, rf.state == Leader
-}
-
-func (rf *Raft) createApplyMsg(e Entry) ApplyMsg {
-	var applyMsg ApplyMsg
-	var tmp int
-	bytesBuffer := bytes.NewBuffer(e.Data)
-	binary.Read(bytesBuffer, binary.BigEndian, &tmp)
-	applyMsg.CommandIndex = e.Index
-	applyMsg.Command = tmp
-	return applyMsg
-}
-
-func MinInt(a int, b int) int {
-	if a < b {
-		return a
-	} else {
-		return b
-	}
-}
-
-func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
-	fmt.Printf("%d(%d) access append entries from %d(%d)\n", rf.me, rf.term, args.From, args.Term)
-	defer fmt.Printf("%d: EndAppendEntries %v\n", rf.me, time.Now().UnixNano())
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	if args.Term > rf.term {
-		rf.BecomeFollower(args.Term, args.From)
-	} else if (args.Term < rf.term) {
-		reply.Success = false
-		reply.Term = rf.term
-		reply.To = rf.me
-		return
+func (rf *Raft) handleHeartbeat(from int32, term int, msgType MessageType) bool {
+	if term > rf.term {
+		rf.becomeFollower(term, from)
+	} else if (term < rf.term) {
+		return false
 	} else if rf.state == Candidate || (rf.state == Follower && rf.leader == -1) {
-		rf.BecomeFollower(args.Term, args.From)
+		if msgType == MsgAppendReply{
+			rf.becomeFollower(term, from)
+		} else {
+			rf.becomeFollower(term, -1)
+		}
 	}
 	// copy entry
-	rf.lastElection = 0
-	index := len(rf.raftLog.Entries)
-	if args.PrevLogIndex >= index {
-		reply.Success = false
-		//reply.Commited =
-		reply.Term = rf.term
-		return
+	if rf.state != Leader {
+		rf.lastElection = 0
 	}
-	if rf.raftLog.Entries[args.PrevLogIndex].Term == args.PrevLogTerm {
-		lastIndex := args.PrevLogIndex
-		for idx, e := range args.Entries {
-			e.Index = idx + args.PrevLogIndex + 1
-			e.Term = args.Term
-			if e.Index >= index {
-				rf.raftLog.Entries = append(rf.raftLog.Entries, e)
-			} else {
-				rf.raftLog.Entries[e.Index] = e
-			}
-			lastIndex = e.Index
-		}
-		reply.Success = true
-		rf.raftLog.commited = MinInt(args.Commited, lastIndex)
-		for _, e := range rf.raftLog.Entries[rf.raftLog.applied + 1 : rf.raftLog.commited + 1] {
-			rf.applySM <- rf.createApplyMsg(e)
-		}
-		rf.raftLog.applied = rf.raftLog.commited
-		reply.Term = rf.term
-		reply.Commited = lastIndex
-	} else {
-		reply.Success = false
-		reply.Term = rf.term
-	}
+	return true
 }
+
+func (rf *Raft) sendHeartbeat(msg *AppendMessage) {
+	var reply AppendReply
+	ts := rf.ts
+	reply.To = msg.To
+	fmt.Printf("send append msg from %d to %d, at %d\n", msg.From, msg.To, ts)
+	ok := rf.peers[msg.To].Call("Raft.HeartBeat", msg, &reply)
+	if ok {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		ts = rf.ts
+		if rf.handleHeartbeat(int32(msg.To), reply.Term, MsgAppendReply) {
+			rf.actives[msg.To] = true
+		}
+	}
+	fmt.Printf("AppendEntries from %d to %d, %t, at %d\n", msg.From, msg.To, ok, ts)
+}
+
 
 //
 // the tester calls Kill() when a Raft instance won't
@@ -563,7 +591,7 @@ func (rf *Raft) Kill() {
 // for any long-running work.
 //
 
-func (rf *Raft) BecomeFollower(term int, leader int32) {
+func (rf *Raft) becomeFollower(term int, leader int32) {
 	if rf.term != term {
 		rf.vote = int(leader)
 	}
@@ -573,14 +601,15 @@ func (rf *Raft) BecomeFollower(term int, leader int32) {
 	fmt.Printf("%d become follower of %d in term: %d when %d\n", rf.me, leader, term, rf.ts)
 }
 
-func (rf *Raft) BecomeLeader() {
+func (rf *Raft) becomeLeader() {
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 	for idx := range rf.nextIndex {
 		rf.nextIndex[idx] = len(rf.raftLog.Entries)
 		rf.matchIndex[idx] = len(rf.raftLog.Entries) - 1
 	}
-	rf.raftLog.Entries = append(rf.raftLog.Entries, Entry{[]byte{}, 0, 0})
+	index := len(rf.raftLog.Entries)
+	rf.raftLog.Entries = append(rf.raftLog.Entries, Entry{[]byte{}, rf.term, index})
 	rf.state = Leader
 	rf.leader = int32(rf.me)
 	rf.lastHeartBeat = 0
@@ -588,11 +617,12 @@ func (rf *Raft) BecomeLeader() {
 	fmt.Printf("%d become leader when %d\n", rf.me, rf.ts)
 }
 
-func (rf *Raft) BecomeCandidate() {
+func (rf *Raft) becomeCandidate() {
 	rf.leader = -1
 	rf.state = Candidate
 	rf.reset(rf.term + 1)
 	rf.vote = rf.me
+	rf.argsChan = make(chan RequestVoteArgs, 10000)
 	fmt.Printf("%d become candidate when %d\n", rf.me, rf.ts)
 }
 
@@ -637,25 +667,28 @@ func (p SortByFirst) Less(i, j int) bool {
 }
 
 
-func (rf *Raft) Propose() {
+func (rf *Raft) propose(msg *AppendMessage) {
 	fmt.Printf("%d: BeginSend append entries: %v\n", rf.me, time.Now().UnixNano())
 	defer fmt.Printf("%d: EndSend append entries: %v\n", rf.me, time.Now().UnixNano())
 	logNum := len(rf.raftLog.Entries)
+	rf.raftLog.Entries = append(rf.raftLog.Entries, msg.Entries[0])
 	for id, _ := range rf.peers {
 		if id != int(rf.me) && logNum >= rf.nextIndex[id] {
 			msg := rf.createMessage(id)
+			msg.MsgType = MsgAppend
 			msg.Entries, _ = rf.getUnsendEntries(id)
 			rf.msgChan <- msg
 		}
 	}
 }
 
-func (rf *Raft) LeaderBroadCast() {
+func (rf *Raft) leaderBroadCast() {
 	fmt.Printf("%d: HeartBeat! %d\n", rf.me, rf.ts)
 	defer fmt.Printf("%d: EndHeartBeat! %d\n", rf.me, rf.ts)
 	for idx, _ := range rf.peers {
 		if idx != rf.me {
 			msg := rf.createMessage(idx)
+			msg.MsgType = MsgHeartbeat
 			rf.msgChan <- msg
 		}
 	}
@@ -675,23 +708,20 @@ func (rf *Raft) maybeLose() {
 		}
 	}
 	if succeed <= len(rf.actives) / 2 {
-		rf.BecomeFollower(rf.term, -1)
+		rf.becomeFollower(rf.term, -1)
 	}
 }
 
-func (rf *Raft) Campaign() bool {
-	fmt.Printf("%d campaign begin at %d.\n", rf.me, rf.ts)
-	defer fmt.Printf("%d campaign end. leader :%d, state: %d\n", rf.me, rf.leader, rf.state)
-	rf.BecomeCandidate()
+func (rf *Raft) campaign() bool {
+	rf.becomeCandidate()
 	rf.votes[rf.me] = 1
-	Term := rf.term
 	lastLogIndex := rf.raftLog.GetLastIndex()
 	lastLogTerm := rf.raftLog.GetLastTerm()
 	for idx, _ := range rf.peers {
 		if idx != rf.me {
 			var msg RequestVoteArgs
 			msg.From = rf.me
-			msg.Term = Term
+			msg.Term = rf.term
 			msg.LastLogIndex = lastLogIndex
 			msg.LastLogTerm = lastLogTerm
 			msg.To = idx
@@ -708,41 +738,37 @@ func (rf *Raft) send() {
 	vi := 0*/
 	for {
 		select {
-		case msg := <-rf.msgChan: {
-			rf.sendAppendEntries(&msg)
-		}
 		case args := <- rf.argsChan :{
 			rf.sendRequestVote(&args)
 		}
+		case msg := <-rf.msgChan: {
+			if msg.MsgType == MsgPropose {
+				rf.mu.Lock()
+				if rf.state == Leader {
+					rf.propose(&msg)
+				}
+				rf.mu.Unlock()
+			} else if msg.MsgType == MsgAppend {
+				rf.sendAppendEntries(&msg)
+			} else if msg.MsgType == MsgHeartbeat{
+				rf.sendHeartbeat(&msg)
+			} else if msg.MsgType == MsgStop {
+				return
+			}
+		}
 		default:
+			time.Sleep(20 * time.Millisecond)
 			break
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
 func (rf *Raft) step() {
 	for {
-		select {
-		case x := <-rf.propose:
-			{
-				if x == MsgPropose {
-					if rf.state == Leader {
-						rf.mu.Lock()
-						rf.Propose()
-						rf.mu.Unlock()
-					}
-				} else if x == MsgStop {
-					return
-				}
-			}
-		default:
-			break
-		}
 		rf.mu.Lock()
 		if rf.state == Leader {
-			if rf.lastHeartBeat > 150 {
-				rf.LeaderBroadCast()
+			if rf.lastHeartBeat > 100 {
+				rf.leaderBroadCast()
 				rf.lastHeartBeat = 0
 			}
 			if rf.lastElection > 500 {
@@ -751,15 +777,16 @@ func (rf *Raft) step() {
 			}
 		} else {
 			if rf.lastElection >= rf.rdElectionTimeout {
+				fmt.Printf("%d campaign begin at term:%d, ts: %d.\n", rf.me, rf.lastElection, rf.ts)
 				rf.lastElection = 0
-				rf.Campaign()
+				rf.campaign()
 			}
 		}
-		rf.lastHeartBeat += 50
-		rf.lastElection += 50
-		rf.ts += 50
+		rf.lastHeartBeat += 40
+		rf.lastElection += 40
+		rf.ts += 40
 		rf.mu.Unlock()
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(time.Duration(40) * time.Millisecond)
 	}
 }
 
@@ -778,7 +805,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.raftLog.applied = 0
 	rf.term = 0
 	rf.vote = -1
-	rf.rdElectionTimeout = int32(800 + rand.Intn(5) * 100)
+	rf.rdElectionTimeout = int32(600 + rand.Intn(5) * 60)
 	for  {
 		if _, ok := electionTimes[rf.rdElectionTimeout]; ok {
 			rf.rdElectionTimeout += 100
@@ -793,16 +820,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastHeartBeat = 0
 	rf.lastElection = 0
 	rf.ts = 0
-	rf.propose = make(chan MsgType, 100)
 	//rf.appendChan = make(chan AppendReply, 1000)
 	//rf.voteChan = make(chan RequestVoteReply, 1000)
-	rf.msgChan = make(chan AppendMessage, 1000)
-	rf.argsChan = make(chan RequestVoteArgs, 1000)
+	rf.msgChan = make(chan AppendMessage, 10000)
+	rf.argsChan = make(chan RequestVoteArgs, 10000)
 	rf.votes = make([]int, len(rf.peers))
 	rf.leader = -1
 	rf.actives = make([]bool, len(rf.peers))
 	// Your initialization code here.
-	rf.BecomeFollower(0, -1)
+	rf.becomeFollower(0, -1)
 	rf.readPersist(persister.ReadRaftState())
 	//go rf.tickHeartBeat()
 	go rf.step()
