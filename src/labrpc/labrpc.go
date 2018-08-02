@@ -57,7 +57,10 @@ import "log"
 import "strings"
 import "math/rand"
 import "time"
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"fmt"
+)
 
 type reqMsg struct {
 	endname  interface{} // name of sending ClientEnd
@@ -92,11 +95,13 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 	qe := labgob.NewEncoder(qb)
 	qe.Encode(args)
 	req.args = qb.Bytes()
-
+	rpcok := false
 	select {
 	case e.ch <- req:
 		// ok
+		rpcok = true
 	case <-e.done:
+		fmt.Printf("===============Error! rpc has done.================ %t\n", rpcok)
 		return false
 	}
 
@@ -206,7 +211,8 @@ func (rn *Network) IsServerDead(endname interface{}, servername interface{}, ser
 
 func (rn *Network) ProcessReq(req reqMsg) {
 	enabled, servername, server, reliable, longreordering := rn.ReadEndnameInfo(req.endname)
-
+	fmt.Printf("===========Process a Req\n")
+	defer fmt.Printf("End Process a Req\n")
 	if enabled && servername != nil && server != nil {
 		if reliable == false {
 			// short delay
@@ -217,6 +223,7 @@ func (rn *Network) ProcessReq(req reqMsg) {
 		if reliable == false && (rand.Int()%1000) < 100 {
 			// drop the request, return as if timeout
 			req.replyCh <- replyMsg{false, nil}
+			fmt.Printf("===========Process a Req Timeout\n")
 			return
 		}
 
@@ -260,9 +267,11 @@ func (rn *Network) ProcessReq(req reqMsg) {
 
 		if replyOK == false || serverDead == true {
 			// server was killed while we were waiting; return error.
+			fmt.Printf("===========Process a Req Timeout reply no ok\n")
 			req.replyCh <- replyMsg{false, nil}
 		} else if reliable == false && (rand.Int()%1000) < 100 {
 			// drop the reply, return as if timeout
+			fmt.Printf("===========Process a Req Timeout Unreliable\n")
 			req.replyCh <- replyMsg{false, nil}
 		} else if longreordering == true && rand.Intn(900) < 600 {
 			// delay the response for a while
@@ -291,6 +300,7 @@ func (rn *Network) ProcessReq(req reqMsg) {
 		time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
 			req.replyCh <- replyMsg{false, nil}
 		})
+		fmt.Printf("===========Process a Req Timeout afterFunc: %t, %t, %t\n", enabled, servername != nil, server != nil)
 	}
 
 }

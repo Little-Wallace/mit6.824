@@ -3,6 +3,11 @@ package main
 import (
 	"fmt"
 	"mapreduce"
+	//"os"
+	"strconv"
+	"log"
+	"unicode"
+	"bytes"
 	"os"
 )
 
@@ -31,6 +36,7 @@ func reduceF(key string, values []string) string {
 // 2) Master (e.g., go run wc.go master localhost:7777 x1.txt .. xN.txt)
 // 3) Worker (e.g., go run wc.go worker localhost:7777 localhost:7778 &)
 func main() {
+	//mapF("ancd", "abc 12/ wef; wef\nde abc")
 	if len(os.Args) < 4 {
 		fmt.Printf("%s: see usage comments in file\n", os.Args[0])
 	} else if os.Args[1] == "master" {

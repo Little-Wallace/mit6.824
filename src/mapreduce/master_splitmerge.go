@@ -22,6 +22,7 @@ func (mr *Master) merge() {
 			log.Fatal("Merge: ", err)
 		}
 		dec := json.NewDecoder(file)
+		count := 0
 		for {
 			var kv KeyValue
 			err = dec.Decode(&kv)
@@ -29,7 +30,9 @@ func (mr *Master) merge() {
 				break
 			}
 			kvs[kv.Key] = kv.Value
+			count ++
 		}
+		fmt.Printf("Merge: read keys: %d\n", count)
 		file.Close()
 	}
 	var keys []string
