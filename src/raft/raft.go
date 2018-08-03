@@ -183,6 +183,7 @@ func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	fmt.Printf("%d Get term: %d,  state: %d, ts: %d\n", rf.me, rf.term, rf.state, rf.ts)
     return rf.term, rf.state == Leader
 }
 
@@ -534,7 +535,7 @@ func (rf *Raft) handleHeartbeat(from int32, term int, msgType MessageType) bool 
 	} else if (term < rf.term) {
 		return false
 	} else if rf.state == Candidate || (rf.state == Follower && rf.leader == -1) {
-		if msgType == MsgAppendReply{
+		if msgType != MsgAppendReply {
 			rf.becomeFollower(term, from)
 		} else {
 			rf.becomeFollower(term, -1)
@@ -551,7 +552,7 @@ func (rf *Raft) sendHeartbeat(msg *AppendMessage) {
 	var reply AppendReply
 	ts := rf.ts
 	reply.To = msg.To
-	fmt.Printf("send append msg from %d to %d, at %d\n", msg.From, msg.To, ts)
+	fmt.Printf("send heartbeat msg from %d to %d, at %d\n", msg.From, msg.To, ts)
 	ok := rf.peers[msg.To].Call("Raft.HeartBeat", msg, &reply)
 	if ok {
 		rf.mu.Lock()
@@ -561,7 +562,7 @@ func (rf *Raft) sendHeartbeat(msg *AppendMessage) {
 			rf.actives[msg.To] = true
 		}
 	}
-	fmt.Printf("AppendEntries from %d to %d, %t, at %d\n", msg.From, msg.To, ok, ts)
+	fmt.Printf("heart from %d to %d, %t, at %d\n", msg.From, msg.To, ok, ts)
 }
 
 
@@ -820,6 +821,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastHeartBeat = 0
 	rf.lastElection = 0
 	rf.ts = 0
+	rf.applySM = applyCh
 	//rf.appendChan = make(chan AppendReply, 1000)
 	//rf.voteChan = make(chan RequestVoteReply, 1000)
 	rf.msgChan = make(chan AppendMessage, 10000)
