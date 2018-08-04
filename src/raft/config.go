@@ -179,6 +179,7 @@ func (cfg *config) start1(i int) {
 							m.CommandIndex, i, m.Command, j, old)
 					}
 				}
+				fmt.Printf("Apply a Message of %d\n", m.CommandIndex)
 				_, prevok := cfg.logs[i][m.CommandIndex-1]
 				cfg.logs[i][m.CommandIndex] = v
 				if m.CommandIndex > cfg.maxIndex {
@@ -447,6 +448,7 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 		}
 
 		if index != -1 {
+			fmt.Printf("Get a cmd %d in %d\n", cmd, index)
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
 			t1 := time.Now()
@@ -459,6 +461,7 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 						return index
 					}
 				}
+				fmt.Printf("Get a cmd %d in %d servers\n", cmd1.(int), nd)
 				time.Sleep(20 * time.Millisecond)
 			}
 			if retry == false {
@@ -468,6 +471,7 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
+	fmt.Printf("Fail to get cmd %d\n", cmd)
 	cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 	return -1
 }

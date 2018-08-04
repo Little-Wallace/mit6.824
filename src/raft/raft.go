@@ -23,7 +23,6 @@ import (
 	"math/rand"
 	"time"
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"labgob"
 	"sort"
@@ -74,7 +73,6 @@ type AppendMessage struct {
 	PrevLogIndex 	int
 	PrevLogTerm		int
 	Entries			[]Entry
-	Success			bool
 }
 
 type AppendReply struct {
@@ -114,6 +112,7 @@ type UnstableLog struct {
 	Entries		[]Entry
 	commited	int
 	applied		int
+	pk			int
 }
 
 func (log *UnstableLog) GetLastIndex() int {
@@ -281,6 +280,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 		reply.Success = false
 		reply.To = rf.me
 		reply.Term = rf.term
+		reply.Commited = rf.raftLog.commited
 		return
 	}
 
@@ -291,8 +291,8 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 		fmt.Printf("%d(index: %d) reject append entries from %d(prev index: %d)\n",
 			rf.me, index, args.From, args.PrevLogIndex)
 		reply.Success = false
-		reply.Commited = index - 1
-		//reply.Commited =
+		reply.Commited = rf.raftLog.commited
+		reply.To = rf.me
 		reply.Term = rf.term
 		return
 	}
@@ -308,17 +308,21 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 			}
 			lastIndex = e.Index
 		}
-		reply.Success = true
+		fmt.Printf("%d commit to %d -> min(%d, %d, %d)\n", rf.me, rf.raftLog.commited,
+			args.Commited, lastIndex, len(rf.raftLog.Entries))
 		rf.raftLog.commited = MinInt(args.Commited, lastIndex)
 		if rf.raftLog.applied < rf.raftLog.commited && rf.raftLog.commited < len(rf.raftLog.Entries) {
 			for _, e := range rf.raftLog.Entries[rf.raftLog.applied + 1 : rf.raftLog.commited + 1] {
-				//rf.applySM <- rf.createApplyMsg(e)
-				fmt.Printf("%d Apply entre : term: %d, index: %d\n", rf.me, e.Term, e.Index)
+				//if len(e.Data) > 0 {
+				rf.applySM <- rf.createApplyMsg(e)
+				//}
 			}
 		}
 		rf.raftLog.applied = rf.raftLog.commited
 		reply.Term = rf.term
-		reply.Commited = lastIndex
+		reply.Commited = len(rf.raftLog.Entries) - 1
+		reply.To = rf.me
+		reply.Success = true
 	} else {
 		reply.Success = false
 		reply.Term = rf.term
@@ -334,6 +338,7 @@ func (rf *Raft) HeartBeat(msg *AppendMessage, reply *AppendReply)  {
 		reply.Success = false
 		reply.To = rf.me
 		reply.Term = MaxInt(rf.term, reply.Term)
+		reply.Commited = rf.raftLog.commited
 		return
 	}
 	reply.Success = true
@@ -451,30 +456,49 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.leader != rf.me {
 		return len(rf.raftLog.Entries), rf.term, false
 	}
-	bytesBuffer := bytes.NewBuffer([]byte{})
-	binary.Write(bytesBuffer, binary.BigEndian, command)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
 	rf.mu.Lock()
-	index := len(rf.raftLog.Entries)
-	rf.propose(bytesBuffer.Bytes())
+	index := rf.raftLog.pk + 1
+	rf.raftLog.pk += 1
+	e.Encode(index)
+	e.Encode(command)
+	data := w.Bytes()
+	rf.propose(data)
+	fmt.Printf("%d apppend a message %s, len: %d\n", rf.me, data, data)
 	rf.mu.Unlock()
 	//rf.msgChan <- msg
 	//accept := rf.sendAppendEntries()
-	for t := 0; t < 20; t ++{
+	for t := 0; t < 20; t ++ {
 		time.Sleep(time.Millisecond * 100)
 		if rf.raftLog.applied >= index {
+			fmt.Printf("%d Store a message of %d in %d,(term: %d)\n", rf.me, command.(int), index, rf.term)
 			return index, rf.term, true
 		}
 	}
+	fmt.Printf("%d Store a message of %d timeout\n", rf.me, command.(int))
 	return index, rf.term, rf.state == Leader
 }
 
 func (rf *Raft) createApplyMsg(e Entry) ApplyMsg {
 	var applyMsg ApplyMsg
+	var index int
 	var tmp int
-	bytesBuffer := bytes.NewBuffer(e.Data)
-	binary.Read(bytesBuffer, binary.BigEndian, &tmp)
-	applyMsg.CommandIndex = e.Index
-	applyMsg.Command = tmp
+	if len(e.Data) > 0 {
+		r := bytes.NewBuffer(e.Data)
+		d := labgob.NewDecoder(r)
+		d.Decode(&index)
+		d.Decode(&tmp)
+		applyMsg.CommandIndex = index
+		applyMsg.Command = tmp
+		applyMsg.CommandValid = true
+		fmt.Printf("%d Apply entre : term: %d, index: %d, value : %d\n", rf.me, e.Term, applyMsg.CommandIndex, tmp)
+	} else {
+		applyMsg.Command = -1
+		applyMsg.CommandValid = false
+		//applyMsg.CommandValid = false
+		fmt.Printf("%d empty Apply entre : term: %d, index: %d, value\n", rf.me, e.Term, e.Index)
+	}
 	return applyMsg
 }
 
@@ -498,7 +522,6 @@ func (rf *Raft) sendAppendEntries(msg *AppendMessage) bool {
 	var reply AppendReply
 	ts := rf.ts
 	ok := rf.peers[msg.To].Call("Raft.AppendEntries", msg, &reply)
-	reply.To = msg.To
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
@@ -523,11 +546,14 @@ func (rf *Raft) handleAppendReply(msg* AppendMessage, reply* AppendReply) {
 		msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(reply.To)
 		fmt.Printf("%d send again handleAppendReply since %d\n", rf.me, msg.PrevLogIndex)
 		msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
+		msg.MsgType = MsgAppend
 		rf.msgChan <- msg
 	} else {
-		fmt.Printf("%d send handleAppendReply success\n", rf.me)
 		rf.nextIndex[reply.To] = reply.Commited + 1
 		rf.matchIndex[reply.To] = reply.Commited
+/*		if reply.Commited <= rf.raftLog.commited {
+			return
+		}*/
 		commits := make([]int, len(rf.peers))
 		for i := range rf.matchIndex {
 			if i == rf.me {
@@ -538,15 +564,20 @@ func (rf *Raft) handleAppendReply(msg* AppendMessage, reply* AppendReply) {
 		}
 		sort.Ints(commits)
 		quorum := len(rf.peers) / 2
+		fmt.Printf("%d receive a msg commit : %d from %d\n", rf.me, reply.Commited, reply.To)
 		fmt.Printf("%d commit %d, to commit %d, apply %d, all: %d\n",
-			rf.me, rf.raftLog.commited, commits[quorum], rf.raftLog.applied, len(rf.raftLog.Entries))
+			rf.me, rf.raftLog.commited, commits[quorum], rf.raftLog.applied,
+			len(rf.raftLog.Entries))
 		if rf.raftLog.commited < commits[quorum] {
 			rf.raftLog.commited = commits[quorum]
 			for _, e := range rf.raftLog.GetUnApplyEntry() {
-				//rf.applySM <- rf.createApplyMsg(e)
-				fmt.Printf("leader: %d Apply entre : term: %d, index: %d\n", rf.me, e.Term, e.Index)
+				rf.applySM <- rf.createApplyMsg(e)
+				if e.Index != rf.raftLog.applied + 1 {
+					fmt.Printf("%d APPLY ERROR! %d, %d\n", rf.me, e.Index, rf.raftLog.applied)
+				}
 				rf.raftLog.applied += 1
 			}
+			rf.broadcast()
 			fmt.Printf("%d apply message\n", rf.me)
 		}
 		fmt.Printf("%d send handleAppendReply end\n", rf.me)
@@ -560,6 +591,7 @@ func (rf *Raft) handleHeartbeat(from int, term int, msgType MessageType) bool {
 				return false;
 			}
 		} else {
+			fmt.Printf("%d(%d) receive a larger term(%d) from %d of %d\n", rf.me, rf.term, term, from, msgType)
 			if msgType == MsgAppend || msgType == MsgHeartbeat{
 				rf.becomeFollower(term, from)
 			} else {
@@ -654,6 +686,9 @@ func (rf *Raft) becomeCandidate() {
 }
 
 func (rf *Raft) getUnsendEntries(idx int) ([]Entry, int) {
+	if rf.nextIndex[idx] >= len(rf.raftLog.Entries) {
+		return []Entry{}, rf.nextIndex[idx] - 1
+	}
 	Entries := rf.raftLog.Entries[rf.nextIndex[idx]:]
 	return Entries, rf.nextIndex[idx] - 1
 }
@@ -664,8 +699,6 @@ func (rf *Raft) createMessage(to int) AppendMessage {
 	msg.From = rf.me
 	msg.To = to
 	msg.Commited = rf.raftLog.commited
-	msg.PrevLogIndex = rf.raftLog.GetLastIndex()
-	msg.PrevLogTerm = rf.raftLog.GetLastTerm()
 	return msg
 }
 
@@ -690,27 +723,24 @@ func (p SortByFirst) Less(i, j int) bool {
 	return p.Pairs[i].value > p.Pairs[j].value
 }
 
-
 func (rf *Raft) propose(data []byte) {
+	logNum := len(rf.raftLog.Entries)
+	rf.raftLog.Entries = append(rf.raftLog.Entries,
+		Entry{data, rf.term, logNum})
+	rf.broadcast()
+}
+
+func (rf *Raft) broadcast() {
 	fmt.Printf("%d: BeginSend append entries\n", rf.me)
 	defer fmt.Printf("%d: EndSend append entries:\n", rf.me)
-	logNum := len(rf.raftLog.Entries)
-	entry := Entry{data, logNum, rf.term}
-	rf.raftLog.Entries = append(rf.raftLog.Entries, entry)
-	rf.lastElection = 0
 	for id, _ := range rf.peers {
-		if id != int(rf.me) && logNum >= rf.nextIndex[id] {
+		if id != int(rf.me) {
 			msg := rf.createMessage(id)
 			msg.MsgType = MsgAppend
 			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(id)
 			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-			select {
-				case rf.msgChan <- msg: {
-					fmt.Printf("%d: success to send append entries\n", rf.me)
-				}
-			default:
-				fmt.Printf("%d: failed to send append entries\n", rf.me)
-			}
+			msg.Commited = rf.raftLog.commited
+			rf.msgChan <- msg
 		}
 	}
 }
@@ -835,9 +865,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.raftLog.Entries = append(rf.raftLog.Entries, Entry{[]byte{}, 0, 0})
-	rf.raftLog.commited = 0
-	rf.raftLog.applied = 0
+	e := Entry{[]byte{}, 0, 0}
+	rf.raftLog = UnstableLog{
+		[]Entry{e},
+		0, 0, 0,
+	}
 	rf.term = 0
 	rf.vote = -1
 	rf.rdElectionTimeout = int32(800 + rand.Intn(5) * 40)
