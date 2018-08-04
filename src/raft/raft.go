@@ -334,7 +334,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 }
 
 func (rf *Raft) HeartBeat(msg *AppendMessage, reply *AppendReply)  {
-	if !rf.handleHeartbeat(msg.From, msg.To, msg.MsgType) {
+	if !rf.handleHeartbeat(msg.From, msg.Term, msg.MsgType) {
 		reply.Success = false
 		reply.To = rf.me
 		reply.Term = MaxInt(rf.term, reply.Term)
@@ -797,28 +797,20 @@ func (rf *Raft) campaign() bool {
 }
 
 func (rf *Raft) send() {
-/*	ms := make([]AppendMessage, 100)
-	vs := make([]RequestVoteArgs, 100)
-	mi := 0
-	vi := 0*/
 	for {
 		select {
-		case args := <- rf.argsChan :{
-			rf.sendRequestVote(&args)
-		}
-		case msg, more := <-rf.msgChan: {
-			if !more {
-				time.Sleep(30 * time.Millisecond)
-				break
-			} else if msg.MsgType == MsgAppend {
-				rf.sendAppendEntries(&msg)
-			} else if msg.MsgType == MsgHeartbeat{
-				rf.sendHeartbeat(&msg)
+		case args := <-rf.argsChan:
+			{
+				rf.sendRequestVote(&args)
 			}
-		}
-		default:
-			time.Sleep(30 * time.Millisecond)
-			break
+		case msg := <-rf.msgChan:
+			{
+				if msg.MsgType == MsgAppend {
+					rf.sendAppendEntries(&msg)
+				} else if msg.MsgType == MsgHeartbeat {
+					rf.sendHeartbeat(&msg)
+				}
+			}
 		}
 	}
 }
