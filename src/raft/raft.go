@@ -102,35 +102,6 @@ type RequestVoteReply struct {
 // A Go object implementing a single Raft peer.
 //
 
-type Entry struct {
-	Data []byte
-	Term int
-	Index int
-}
-
-type UnstableLog struct {
-	Entries		[]Entry
-	commited	int
-	applied		int
-	pk			int
-}
-
-func (log *UnstableLog) GetLastIndex() int {
-	return log.Entries[len(log.Entries) - 1].Index
-}
-
-func (log *UnstableLog) GetLastTerm() int {
-	return log.Entries[len(log.Entries) - 1].Term
-}
-
-func (log *UnstableLog) IsUpToDate(Index int, Term int) bool {
-	return Term > log.GetLastTerm() || (Term == log.GetLastTerm() && Index >= log.GetLastIndex())
-}
-
-func (log *UnstableLog) GetUnApplyEntry() []Entry {
-	return log.Entries[log.applied + 1 : log.commited + 1]
-}
-
 type RoleState int
 const (
 	_ RoleState = iota
@@ -817,20 +788,27 @@ func (rf *Raft) send() {
 
 func (rf *Raft) step() {
 	for {
+		hasRpc := false
 		select {
 			case args:= <-rf.argsChan : {
 				rf.sendRequestVote(&args)
+				rf.lastHeartBeat += 15
+				rf.lastElection += 15
+				hasRpc = true
 			}
 		default:
 			break
 		}
+		if hasRpc {
+			continue
+		}
 		rf.mu.Lock()
 		if rf.state == Leader {
-			if rf.lastHeartBeat > 120 {
+			if rf.lastHeartBeat > 200 {
 				rf.leaderBroadCast()
 				rf.lastHeartBeat = 0
 			}
-			if rf.lastElection > 600 {
+			if rf.lastElection > 1000 {
 				rf.lastElection = 0
 				rf.maybeLose()
 			}
@@ -839,11 +817,11 @@ func (rf *Raft) step() {
 			rf.lastElection = 0
 			rf.campaign()
 		}
-		rf.lastHeartBeat += 40
-		rf.lastElection += 40
-		rf.ts += 40
+		rf.lastHeartBeat += 100
+		rf.lastElection += 50
+		rf.ts += 50
 		rf.mu.Unlock()
-		time.Sleep(time.Duration(40) * time.Millisecond)
+		time.Sleep(time.Duration(50) * time.Millisecond)
 	}
 }
 
@@ -864,10 +842,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 	rf.term = 0
 	rf.vote = -1
-	rf.rdElectionTimeout = int32(800 + rand.Intn(5) * 40)
+	rf.rdElectionTimeout = int32(1000 + rand.Intn(5) * 100)
 	for  {
 		if _, ok := electionTimes[rf.rdElectionTimeout]; ok {
-			rf.rdElectionTimeout += 40
+			rf.rdElectionTimeout += 100
 			//rf.rdElectionTimeout = int32(500 + rand.Intn(5) * 100)
 		} else {
 			break
