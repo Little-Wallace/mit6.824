@@ -258,7 +258,15 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 	defer fmt.Printf("%d: EndAppendEntries \n", rf.me, )
 
 	index := len(rf.raftLog.Entries)
-	if args.PrevLogIndex >= index {
+	if args.PrevLogIndex < rf.raftLog.commited {
+		fmt.Printf("%d(index: %d) reject append entries from %d(prev index: %d)\n",
+			rf.me, index, args.From, args.PrevLogIndex)
+		reply.Success = true
+		reply.Commited = rf.raftLog.commited
+		reply.To = rf.me
+		reply.Term = rf.term
+		return
+	} else if args.PrevLogIndex >= index {
 		fmt.Printf("%d(index: %d) reject append entries from %d(prev index: %d)\n",
 			rf.me, index, args.From, args.PrevLogIndex)
 		reply.Success = false
@@ -278,9 +286,13 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 				rf.raftLog.Entries[e.Index] = e
 			}
 			lastIndex = e.Index
+			m := rf.createApplyMsg(e)
+			if m.CommandValid {
+				rf.raftLog.pk = m.CommandIndex
+			}
 		}
-		fmt.Printf("%d commit to %d -> min(%d, %d, %d)\n", rf.me, rf.raftLog.commited,
-			args.Commited, lastIndex, len(rf.raftLog.Entries))
+		fmt.Printf("%d commit to %d -> min(%d, %d) all msg: %d -> %d, preindex :%d\n", rf.me, rf.raftLog.commited,
+			args.Commited, lastIndex, index, len(rf.raftLog.Entries), args.PrevLogIndex)
 		rf.raftLog.commited = MinInt(args.Commited, lastIndex)
 		if rf.raftLog.applied < rf.raftLog.commited && rf.raftLog.commited < len(rf.raftLog.Entries) {
 			for _, e := range rf.raftLog.Entries[rf.raftLog.applied + 1 : rf.raftLog.commited + 1] {
@@ -291,7 +303,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 		}
 		rf.raftLog.applied = rf.raftLog.commited
 		reply.Term = rf.term
-		reply.Commited = len(rf.raftLog.Entries) - 1
+		reply.Commited = lastIndex
 		reply.To = rf.me
 		reply.Success = true
 	} else {
@@ -633,9 +645,9 @@ func (rf *Raft) becomeLeader() {
 	for idx := range rf.nextIndex {
 		rf.nextIndex[idx] = index + 1
 		if idx != rf.me {
-			rf.matchIndex[idx] = rf.raftLog.commited
-		} else{
 			rf.matchIndex[idx] = index
+		} else{
+			rf.matchIndex[idx] = 0
 		}
 	}
 	rf.state = Leader
@@ -710,7 +722,7 @@ func (rf *Raft) broadcast() {
 			msg.To = id
 			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(id)
 			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-			//go rf.sendAppendEntries(msg)
+			go rf.sendAppendEntries(msg)
 			rf.msgChan <- msg
 		}
 	}
@@ -798,7 +810,7 @@ func (rf *Raft) step() {
 				rf.maybeLose()
 			}
 		} else if rf.lastElection >= rf.rdElectionTimeout {
-			fmt.Printf("%d campaign begin at term:%d, ts: %d.\n", rf.me, rf.term, rf.ts)
+			fmt.Printf("%d (state: %d)campaign begin at term:%d, at %d.\n", rf.me, rf.state, rf.term, rf.ts)
 			rf.lastElection = 0
 			rf.campaign()
 			continue
