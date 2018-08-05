@@ -352,13 +352,13 @@ func (rf *Raft) HeartBeat(msg *AppendMessage, reply *AppendReply)  {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-func (rf *Raft) sendRequestVote(args* RequestVoteArgs) bool {
+func (rf *Raft) sendRequestVote(args RequestVoteArgs) bool {
 	if args.Term < rf.term {
 		return true
 	}
 	var reply RequestVoteReply
 	ts := rf.ts
-	ok := rf.peers[args.To].Call("Raft.RequestVote", args, &reply)
+	ok := rf.peers[args.To].Call("Raft.RequestVote", &args, &reply)
 	reply.To = args.To
 	if ok {
 		//fmt.Printf("send request vote from %d to %d ok\n", args.From, args.To)
@@ -489,35 +489,34 @@ func MinInt(a int, b int) int {
 	}
 }
 
-func (rf *Raft) sendAppendEntries(msg *AppendMessage) bool {
+func (rf *Raft) sendAppendEntries(msg AppendMessage) bool {
 	var reply AppendReply
 	ts := rf.ts
-	ok := rf.peers[msg.To].Call("Raft.AppendEntries", msg, &reply)
+	ok := rf.peers[msg.To].Call("Raft.AppendEntries", &msg, &reply)
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 		ts = rf.ts
 		fmt.Printf("send append msg from %d to %d, at %d\n", msg.From, msg.To, ts)
-		rf.handleAppendReply(msg, &reply)
+		rf.handleAppendReply(&reply)
 	}
 	fmt.Printf("AppendEntries from %d to %d, %t, at %d\n", msg.From, msg.To, ok, ts)
 	return ok
 }
 
-func (rf *Raft) handleAppendReply(msg* AppendMessage, reply* AppendReply) {
-	fmt.Printf("%d handleAppendReply from %d at %d\n", rf.me, msg.To, rf.ts)
-	if !rf.handleHeartbeat(msg.To, reply.Term, MsgAppendReply) || rf.state != Leader {
+func (rf *Raft) handleAppendReply(reply* AppendReply) {
+	fmt.Printf("%d handleAppendReply from %d at %d\n", rf.me, reply.To, rf.ts)
+	if !rf.handleHeartbeat(reply.To, reply.Term, MsgAppendReply) || rf.state != Leader {
 		return
 	}
-	rf.actives[msg.To] = true
+	rf.actives[reply.To] = true
 	if !reply.Success {
-		fmt.Printf("%d(%d) handleAppendReply failed, from %d(%d)\n", rf.me, rf.term, msg.To, msg.Term)
+		fmt.Printf("%d(%d) handleAppendReply failed, from %d(%d)\n", rf.me, rf.term, reply.To, reply.Term)
 		rf.nextIndex[reply.To] --
-		msg := rf.createMessage(reply.To)
+		msg := rf.createMessage(reply.To, MsgAppend)
 		msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(reply.To)
 		fmt.Printf("%d send again handleAppendReply since %d\n", rf.me, msg.PrevLogIndex)
 		msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-		msg.MsgType = MsgAppend
 		rf.msgChan <- msg
 	} else {
 		rf.nextIndex[reply.To] = reply.Commited + 1
@@ -575,11 +574,11 @@ func (rf *Raft) handleHeartbeat(from int, term int, msgType MessageType) bool {
 	return true
 }
 
-func (rf *Raft) sendHeartbeat(msg *AppendMessage) {
+func (rf *Raft) sendHeartbeat(msg AppendMessage) {
 	var reply AppendReply
 	ts := rf.ts
 	reply.To = msg.To
-	ok := rf.peers[msg.To].Call("Raft.HeartBeat", msg, &reply)
+	ok := rf.peers[msg.To].Call("Raft.HeartBeat", &msg, &reply)
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
@@ -664,12 +663,13 @@ func (rf *Raft) getUnsendEntries(idx int) ([]Entry, int) {
 	return Entries, rf.nextIndex[idx] - 1
 }
 
-func (rf *Raft) createMessage(to int) AppendMessage {
+func (rf *Raft) createMessage(to int, msgType MessageType) AppendMessage {
 	var msg AppendMessage
 	msg.Term = rf.term
 	msg.From = rf.me
 	msg.To = to
 	msg.Commited = rf.raftLog.commited
+	msg.MsgType = msgType
 	return msg
 }
 
@@ -704,13 +704,13 @@ func (rf *Raft) propose(data []byte) {
 func (rf *Raft) broadcast() {
 	fmt.Printf("%d: BeginSend append entries\n", rf.me)
 	defer fmt.Printf("%d: EndSend append entries:\n", rf.me)
+	msg := rf.createMessage(0, MsgAppend)
 	for id, _ := range rf.peers {
 		if id != int(rf.me) {
-			msg := rf.createMessage(id)
-			msg.MsgType = MsgAppend
+			msg.To = id
 			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(id)
 			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-			msg.Commited = rf.raftLog.commited
+			//go rf.sendAppendEntries(msg)
 			rf.msgChan <- msg
 		}
 	}
@@ -719,11 +719,13 @@ func (rf *Raft) broadcast() {
 func (rf *Raft) leaderBroadCast() {
 	fmt.Printf("%d: HeartBeat! %d\n", rf.me, rf.ts)
 	defer fmt.Printf("%d: EndHeartBeat! %d\n", rf.me, rf.ts)
+	msg := rf.createMessage(0, MsgHeartbeat)
+	//rf.mu.Unlock()
 	for idx, _ := range rf.peers {
 		if idx != rf.me {
-			msg := rf.createMessage(idx)
-			msg.MsgType = MsgHeartbeat
-			time.Sleep(10 * time.Millisecond)
+			msg.To = idx
+			//time.Sleep(10 * time.Millisecond)
+			//go rf.sendHeartbeat(msg)
 			rf.msgChan <- msg
 		}
 	}
@@ -752,6 +754,7 @@ func (rf *Raft) campaign() bool {
 	rf.votes[rf.me] = 1
 	lastLogIndex := rf.raftLog.GetLastIndex()
 	lastLogTerm := rf.raftLog.GetLastTerm()
+	rf.mu.Unlock()
 	for idx, _ := range rf.peers {
 		if idx != rf.me {
 			var msg RequestVoteArgs
@@ -760,8 +763,8 @@ func (rf *Raft) campaign() bool {
 			msg.LastLogIndex = lastLogIndex
 			msg.LastLogTerm = lastLogTerm
 			msg.To = idx
-			//rf.sendRequestVote(&msg)
-			rf.argsChan <- msg
+			go rf.sendRequestVote(msg)
+			//rf.argsChan <- msg
 		}
 	}
 	return false
@@ -770,16 +773,12 @@ func (rf *Raft) campaign() bool {
 func (rf *Raft) send() {
 	for {
 		select {
-		case args := <-rf.argsChan:
-			{
-				rf.sendRequestVote(&args)
-			}
 		case msg := <-rf.msgChan:
 			{
 				if msg.MsgType == MsgAppend {
-					rf.sendAppendEntries(&msg)
+					rf.sendAppendEntries(msg)
 				} else if msg.MsgType == MsgHeartbeat {
-					rf.sendHeartbeat(&msg)
+					rf.sendHeartbeat(msg)
 				}
 			}
 		}
@@ -788,27 +787,13 @@ func (rf *Raft) send() {
 
 func (rf *Raft) step() {
 	for {
-		hasRpc := false
-		select {
-			case args:= <-rf.argsChan : {
-				rf.sendRequestVote(&args)
-				rf.lastHeartBeat += 15
-				rf.lastElection += 15
-				hasRpc = true
-			}
-		default:
-			break
-		}
-		if hasRpc {
-			continue
-		}
 		rf.mu.Lock()
 		if rf.state == Leader {
 			if rf.lastHeartBeat > 200 {
-				rf.leaderBroadCast()
 				rf.lastHeartBeat = 0
-			}
-			if rf.lastElection > 1000 {
+				rf.leaderBroadCast() // unlock in broad heartbeat
+				//continue
+			} else if rf.lastElection > 1000 {
 				rf.lastElection = 0
 				rf.maybeLose()
 			}
@@ -816,6 +801,7 @@ func (rf *Raft) step() {
 			fmt.Printf("%d campaign begin at term:%d, ts: %d.\n", rf.me, rf.term, rf.ts)
 			rf.lastElection = 0
 			rf.campaign()
+			continue
 		}
 		rf.lastHeartBeat += 100
 		rf.lastElection += 50
