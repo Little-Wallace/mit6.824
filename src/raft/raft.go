@@ -216,7 +216,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	fmt.Printf("%d(%d) AccessRequest vote for: %d(%d) at %d\n", rf.me, rf.term, args.From, args.Term, rf.ts)
-	if !rf.handleHeartbeat(args.From, args.Term, MsgRequestVote) {
+	if !rf.checkTerm(args.From, args.Term, MsgRequestVote) {
 		reply.VoteGranted = false
 		reply.Term = rf.term
 		reply.To = rf.me
@@ -247,11 +247,11 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	fmt.Printf("%d(%d) access append entries from %d(%d)\n", rf.me, rf.term, args.From, args.Term)
-	if !rf.handleHeartbeat(args.From, args.Term, args.MsgType) {
+	if !rf.checkTerm(args.From, args.Term, args.MsgType) {
 		reply.Success = false
 		reply.To = rf.me
-		reply.Term = rf.term
-		reply.Commited = rf.raftLog.commited
+		rf.term = 0
+		reply.Commited = 0
 		return
 	}
 
@@ -317,11 +317,11 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 }
 
 func (rf *Raft) HeartBeat(msg *AppendMessage, reply *AppendReply)  {
-	if !rf.handleHeartbeat(msg.From, msg.Term, msg.MsgType) {
+	if !rf.checkTerm(msg.From, msg.Term, msg.MsgType) {
 		reply.Success = false
 		reply.To = rf.me
-		reply.Term = MaxInt(rf.term, reply.Term)
-		reply.Commited = rf.raftLog.commited
+		reply.Term = 0
+		reply.Commited = 0
 		return
 	}
 	reply.Success = true
@@ -389,7 +389,7 @@ func (rf *Raft) sendRequestVote(args RequestVoteArgs) bool {
 func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
 	fmt.Printf("%d(%d): receive vote reply from %d(%d), state: %d\n",
 		rf.me, rf.term, reply.To, reply.Term, rf.state)
-	if !rf.handleHeartbeat(reply.To, reply.Term, MsgAppendReply) {
+	if !rf.checkTerm(reply.To, reply.Term, MsgAppendReply) {
 		return
 	}
 	if rf.state == Candidate {
@@ -448,7 +448,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	e.Encode(command)
 	data := w.Bytes()
 	rf.propose(data)
-	fmt.Printf("%d apppend a message %s, len: %d\n", rf.me, data, data)
 	rf.mu.Unlock()
 	//rf.msgChan <- msg
 	//accept := rf.sendAppendEntries()
@@ -518,7 +517,7 @@ func (rf *Raft) sendAppendEntries(msg AppendMessage) bool {
 
 func (rf *Raft) handleAppendReply(reply* AppendReply) {
 	fmt.Printf("%d handleAppendReply from %d at %d\n", rf.me, reply.To, rf.ts)
-	if !rf.handleHeartbeat(reply.To, reply.Term, MsgAppendReply) || rf.state != Leader {
+	if !rf.checkTerm(reply.To, reply.Term, MsgAppendReply) || rf.state != Leader {
 		return
 	}
 	rf.actives[reply.To] = true
@@ -531,8 +530,10 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
 		rf.msgChan <- msg
 	} else {
-		rf.nextIndex[reply.To] = reply.Commited + 1
-		rf.matchIndex[reply.To] = reply.Commited
+		if rf.matchIndex[reply.To] < reply.Commited {
+			rf.matchIndex[reply.To] = reply.Commited
+			rf.nextIndex[reply.To] = reply.Commited + 1
+		}
 /*		if reply.Commited <= rf.raftLog.commited {
 			return
 		}*/
@@ -566,7 +567,7 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 	}
 }
 
-func (rf *Raft) handleHeartbeat(from int, term int, msgType MessageType) bool {
+func (rf *Raft) checkTerm(from int, term int, msgType MessageType) bool {
 	if term > rf.term {
 		if msgType == MsgRequestVote {
 			if rf.lastElection < rf.rdElectionTimeout && rf.leader != -1 {
@@ -581,6 +582,7 @@ func (rf *Raft) handleHeartbeat(from int, term int, msgType MessageType) bool {
 			}
 		}
 	} else if (term < rf.term) {
+		//if msgType == MsgAppend || msgType == MsgHeartbeat
 		return false
 	}
 	return true
@@ -599,7 +601,7 @@ func (rf *Raft) sendHeartbeat(msg AppendMessage) {
 		if msg.Term == rf.term {
 			rf.actives[msg.To] = true
 		}
-		rf.handleHeartbeat(msg.To, reply.Term, MsgAppendReply)
+		rf.checkTerm(msg.To, reply.Term, MsgAppendReply)
 	}
 	//fmt.Printf("heart from %d to %d, %t, at %d\n", msg.From, msg.To, ok, ts)
 }
@@ -722,7 +724,7 @@ func (rf *Raft) broadcast() {
 			msg.To = id
 			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(id)
 			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-			go rf.sendAppendEntries(msg)
+			//go rf.sendAppendEntries(msg)
 			rf.msgChan <- msg
 		}
 	}

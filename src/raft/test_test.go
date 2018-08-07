@@ -493,8 +493,11 @@ loop:
 		}
 
 		if total2-total1 > (iters+1+3)*3 {
+			fmt.Printf("fail at %d____before: %d\n", try, total1)
 			t.Fatalf("too many RPCs (%v) for %v entries\n", total2-total1, iters)
 		}
+
+		fmt.Printf("succeed at %d____before: %d\n", try, total2 - total1)
 
 		success = true
 		break
