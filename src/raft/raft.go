@@ -243,18 +243,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = args.Term
 }
 
-func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	fmt.Printf("%d(%d) access append entries from %d(%d)\n", rf.me, rf.term, args.From, args.Term)
-	if !rf.checkTerm(args.From, args.Term, args.MsgType) {
-		reply.Success = false
-		reply.To = rf.me
-		rf.term = 0
-		reply.Commited = 0
-		return
+func (rf *Raft) handleHeartbeat(msg *AppendMessage, reply *AppendReply)  {
+	reply.Success = true
+	reply.To = rf.me
+	reply.Term = MaxInt(rf.term, reply.Term)
+	rf.lastElection = 0
+	rf.term = msg.Term
+	if msg.Commited > rf.raftLog.commited {
+		rf.raftLog.commited = msg.Commited
 	}
+}
 
+func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 	defer fmt.Printf("%d: EndAppendEntries \n", rf.me, )
 
 	index := len(rf.raftLog.Entries)
@@ -275,6 +275,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 		reply.Term = rf.term
 		return
 	}
+	reply.To = rf.me
 	if rf.raftLog.Entries[args.PrevLogIndex].Term == args.PrevLogTerm {
 		lastIndex := args.PrevLogIndex
 		for idx, e := range args.Entries {
@@ -294,17 +295,8 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 		fmt.Printf("%d commit to %d -> min(%d, %d) all msg: %d -> %d, preindex :%d\n", rf.me, rf.raftLog.commited,
 			args.Commited, lastIndex, index, len(rf.raftLog.Entries), args.PrevLogIndex)
 		rf.raftLog.commited = MinInt(args.Commited, lastIndex)
-		if rf.raftLog.applied < rf.raftLog.commited && rf.raftLog.commited < len(rf.raftLog.Entries) {
-			for _, e := range rf.raftLog.Entries[rf.raftLog.applied + 1 : rf.raftLog.commited + 1] {
-				//if len(e.Data) > 0 {
-				rf.applySM <- rf.createApplyMsg(e)
-				//}
-			}
-		}
-		rf.raftLog.applied = rf.raftLog.commited
 		reply.Term = rf.term
 		reply.Commited = lastIndex
-		reply.To = rf.me
 		reply.Success = true
 	} else {
 		reply.Success = false
@@ -316,23 +308,31 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
 	}
 }
 
-func (rf *Raft) HeartBeat(msg *AppendMessage, reply *AppendReply)  {
-	if !rf.checkTerm(msg.From, msg.Term, msg.MsgType) {
+func (rf *Raft) AppendEntries(args *AppendMessage, reply *AppendReply)  {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	fmt.Printf("%d(%d) access append entries from %d(%d)\n", rf.me, rf.term, args.From, args.Term)
+	if !rf.checkTerm(args.From, args.Term, args.MsgType) {
 		reply.Success = false
 		reply.To = rf.me
-		reply.Term = 0
+		rf.term = 0
 		reply.Commited = 0
 		return
 	}
-	reply.Success = true
-	reply.To = rf.me
-	reply.Term = MaxInt(rf.term, reply.Term)
-	rf.lastElection = 0
-	rf.term = msg.Term
-	if msg.Commited > rf.raftLog.commited {
-		rf.raftLog.commited = msg.Commited
+
+	if args.MsgType == MsgHeartbeat {
+		rf.handleHeartbeat(args, reply)
+	} else {
+		rf.handleAppendEntries(args, reply)
 	}
-	return
+	if rf.raftLog.applied < rf.raftLog.commited && rf.raftLog.commited < len(rf.raftLog.Entries) {
+		for _, e := range rf.raftLog.Entries[rf.raftLog.applied+1 : rf.raftLog.commited+1] {
+			//if len(e.Data) > 0 {
+			rf.applySM <- rf.createApplyMsg(e)
+			//}
+		}
+		rf.raftLog.applied = rf.raftLog.commited
+	}
 }
 
 //
@@ -560,7 +560,7 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 				}
 				rf.raftLog.applied += 1
 			}
-			rf.broadcast()
+			//rf.broadcast()
 			fmt.Printf("%d apply message\n", rf.me)
 		}
 		fmt.Printf("%d send handleAppendReply end\n", rf.me)
@@ -592,7 +592,7 @@ func (rf *Raft) sendHeartbeat(msg AppendMessage) {
 	var reply AppendReply
 	ts := rf.ts
 	reply.To = msg.To
-	ok := rf.peers[msg.To].Call("Raft.HeartBeat", &msg, &reply)
+	ok := rf.peers[msg.To].Call("Raft.AppendEntries", &msg, &reply)
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
@@ -724,7 +724,6 @@ func (rf *Raft) broadcast() {
 			msg.To = id
 			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(id)
 			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-			//go rf.sendAppendEntries(msg)
 			rf.msgChan <- msg
 		}
 	}
