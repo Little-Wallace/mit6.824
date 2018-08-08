@@ -2,8 +2,8 @@ package raft
 
 import (
 	"labrpc"
-	"fmt"
 	"sync/atomic"
+	"fmt"
 )
 
 type RaftClient struct {
@@ -14,16 +14,22 @@ type RaftClient struct {
 }
 
 
-func (cl *RaftClient) Start() {
+func (cl *RaftClient) Start(replyChan chan<- AppendReply) {
 	cl.msgChan = make(chan AppendMessage, 100)
 	go func() {
 		var done DoneReply
 		for {
 			select {
 			case msg := <- cl.msgChan : {
-				ok := cl.peer.Call("Raft.AppendEntries", &msg, &done)
-				if ok {
-					fmt.Printf("send append msg from %d to %d\n", msg.From, msg.To)
+				if msg.MsgType == MsgAppend {
+					var reply AppendReply
+					ok := cl.peer.Call("Raft.AppendEntries", &msg, &reply)
+					if ok {
+						fmt.Printf("send append msg from %d to %d\n", msg.From, msg.To)
+						replyChan <- reply
+					}
+				} else if msg.MsgType == MsgHeartbeat {
+					cl.peer.Call("Raft.HeartBeat", &msg, &done)
 				}
 				atomic.AddInt32(&cl.pending, -1)
 			}
@@ -32,11 +38,12 @@ func (cl *RaftClient) Start() {
 	}()
 }
 
-func (cl *RaftClient) Send(msg AppendMessage, force bool) {
-	if !force && atomic.LoadInt32(&cl.pending) > 1 {
+func (cl *RaftClient) Send(msg AppendMessage) {
+	if msg.MsgType == MsgHeartbeat && atomic.LoadInt32(&cl.pending) > 1 {
 		return
 	}
 	atomic.AddInt32(&cl.pending, 1)
 	cl.msgChan <- msg
 }
+
 

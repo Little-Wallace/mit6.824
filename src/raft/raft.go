@@ -200,122 +200,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = args.Term
 }
 
-func (rf *Raft) AppendEntries(args *AppendMessage, done* DoneReply) {
-	rf.msgChan <- *args
-}
-
-func (rf *Raft) AppendEntriesResponse(args *AppendReply, done* DoneReply) {
-	rf.replyChan <- *args
-}
-
-func (rf *Raft) handleHeartbeat(msg *AppendMessage, reply *AppendReply)  {
-	reply.Success = true
-	reply.Term = MaxInt(rf.term, reply.Term)
-	rf.lastElection = 0
-	rf.term = msg.Term
-	if msg.Commited > rf.raftLog.commited {
-		rf.raftLog.commited = msg.Commited
-	}
-}
-
-func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
-
-	index := len(rf.raftLog.Entries)
-	if args.PrevLogIndex < rf.raftLog.commited {
-		fmt.Printf("%d(index: %d) reject append entries from %d(prev index: %d)\n",
-			rf.me, index, args.From, args.PrevLogIndex)
-		reply.Success = true
-		reply.Commited = rf.raftLog.commited
-		reply.Term = rf.term
-		return
-	} else if args.PrevLogIndex >= index {
-		fmt.Printf("%d(index: %d) reject append entries from %d(prev index: %d)\n",
-			rf.me, index, args.From, args.PrevLogIndex)
-		reply.Success = false
-		reply.Commited = rf.raftLog.commited
-		reply.Term = rf.term
-		return
-	}
-	if rf.raftLog.Entries[args.PrevLogIndex].Term == args.PrevLogTerm {
-		lastIndex := args.PrevLogIndex
-		for idx, e := range args.Entries {
-			e.Index = idx + args.PrevLogIndex + 1
-			e.Term = args.Term
-			if e.Index >= index {
-				rf.raftLog.Entries = append(rf.raftLog.Entries, e)
-			} else {
-				rf.raftLog.Entries[e.Index] = e
-			}
-			lastIndex = e.Index
-			m := rf.createApplyMsg(e)
-			if m.CommandValid {
-				rf.raftLog.pk = m.CommandIndex
-			}
-		}
-		fmt.Printf("%d commit to %d -> min(%d, %d) all msg: %d -> %d, preindex :%d\n", rf.me, rf.raftLog.commited,
-			args.Commited, lastIndex, index, len(rf.raftLog.Entries), args.PrevLogIndex)
-		rf.raftLog.commited = MinInt(args.Commited, lastIndex)
-		reply.Term = rf.term
-		reply.Commited = lastIndex
-		reply.Success = true
-	} else {
-		reply.Success = false
-		reply.Term = rf.term
-		reply.Commited = index - 1
-		e := rf.raftLog.Entries[args.PrevLogIndex]
-		fmt.Printf("%d(index: %d, term: %d) reject append entries from %d(prev index: %d, term: %d)\n",
-			rf.me, e.Index, e.Term, args.From, args.PrevLogIndex, args.PrevLogTerm)
-	}
-}
-
-func getResponseType(msg MessageType) MessageType {
-	if msg == MsgAppend {
-		return MsgAppendReply
-	} else if msg == MsgHeartbeat {
-		return MsgHeartbeatReply
-	}
-	return MsgStop
-}
-
-func (rf *Raft) stepAppendEntries(args *AppendMessage) {
-	rf.mu.Lock()
-	reply := AppendReply{
-		To: args.From,
-		From: rf.me,
-		MsgType: getResponseType(args.MsgType),
-	}
-	if !rf.checkTerm(args.From, args.Term, args.MsgType) {
-		reply.Success = false
-		reply.Term = rf.term
-		reply.Commited = 0
-		rf.mu.Unlock()
-		rf.sendReply(&reply)
-		return
-	}
-
-	if args.MsgType == MsgHeartbeat {
-		fmt.Printf("%d(%d) access Heartbeat from %d(%d) to %d\n", rf.me, rf.raftLog.commited,
-			args.From, args.Commited, args.To)
-		rf.handleHeartbeat(args, &reply)
-	} else {
-		fmt.Printf("%d(%d) access Append from %d(%d) to %d\n", rf.me, rf.raftLog.commited,
-			args.From, args.Commited, args.To)
-		rf.handleAppendEntries(args, &reply)
-	}
-	if rf.raftLog.applied < rf.raftLog.commited && rf.raftLog.commited < len(rf.raftLog.Entries) {
-		for _, e := range rf.raftLog.Entries[rf.raftLog.applied+1 : rf.raftLog.commited+1] {
-			m := rf.createApplyMsg(e)
-			if m.CommandValid {
-				fmt.Printf("%d reply an entry of log[%d]=%d\n", rf.me, m.CommandIndex, m.Command.(int))
-			}
-			rf.applySM <- rf.createApplyMsg(e)
-		}
-		rf.raftLog.applied = rf.raftLog.commited
-	}
-	rf.mu.Unlock()
-	rf.sendReply(&reply)
-}
-
 //
 // example code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
@@ -504,7 +388,7 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(reply.From)
 		fmt.Printf("%d send again handleAppendReply since %d\n", rf.me, msg.PrevLogIndex)
 		msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-		rf.clients[msg.To].Send(msg, true)
+		rf.clients[msg.To].Send(msg)
 	} else {
 		if rf.matchIndex[reply.From] < reply.Commited {
 			rf.matchIndex[reply.From] = reply.Commited
@@ -683,7 +567,7 @@ func (rf *Raft) broadcast() {
 			msg.To = id
 			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(id)
 			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-			rf.clients[msg.To].Send(msg, true)
+			rf.clients[msg.To].Send(msg)
 		}
 	}
 }
@@ -696,7 +580,7 @@ func (rf *Raft) leaderBroadCast(msg AppendMessage) {
 			//time.Sleep(10 * time.Millisecond)
 			//go rf.sendHeartbeat(msg)
 			fmt.Printf("%d: broadcast heartbeat to %d\n", rf.me, idx)
-			rf.clients[msg.To].Send(msg, false)
+			rf.clients[msg.To].Send(msg)
 		}
 	}
 }
@@ -745,7 +629,10 @@ func (rf *Raft) send() {
 		select {
 		case msg := <-rf.msgChan:
 			{
-				rf.stepAppendEntries(&msg)
+				rf.mu.Lock()
+				reply := rf.handleHeartbeat(&msg)
+				rf.mu.Unlock()
+				rf.sendReply(&reply)
 			}
 		case reply := <-rf.replyChan:
 			{
@@ -827,7 +714,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	for idx := range rf.clients {
 		if idx != rf.me {
 			rf.clients[idx].id = idx
-			rf.clients[idx].Start()
+			rf.clients[idx].Start(rf.replyChan)
 			rf.clients[idx].peer = rf.peers[idx]
 		}
 	}
