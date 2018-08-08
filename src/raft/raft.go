@@ -286,7 +286,8 @@ func (rf *Raft) stepAppendEntries(args *AppendMessage) {
 	}
 	if !rf.checkTerm(args.From, args.Term, args.MsgType) {
 		reply.Success = false
-		reply.Term = rf.term
+		//reply.Term = rf.term
+		rf.term = 0
 		reply.Commited = 0
 		rf.mu.Unlock()
 		rf.sendReply(&reply)
