@@ -72,6 +72,7 @@ type Raft struct {
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
+	clients		[]RaftClient
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -218,7 +219,6 @@ func (rf *Raft) handleHeartbeat(msg *AppendMessage, reply *AppendReply)  {
 }
 
 func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
-	defer fmt.Printf("%d: EndAppendEntries \n", rf.me, )
 
 	index := len(rf.raftLog.Entries)
 	if args.PrevLogIndex < rf.raftLog.commited {
@@ -279,7 +279,6 @@ func getResponseType(msg MessageType) MessageType {
 
 func (rf *Raft) stepAppendEntries(args *AppendMessage) {
 	rf.mu.Lock()
-	fmt.Printf("%d(%d) access append entries from %d(%d) to %d\n", rf.me, rf.term, args.From, args.Term, args.To)
 	reply := AppendReply{
 		To: args.From,
 		From: rf.me,
@@ -287,7 +286,7 @@ func (rf *Raft) stepAppendEntries(args *AppendMessage) {
 	}
 	if !rf.checkTerm(args.From, args.Term, args.MsgType) {
 		reply.Success = false
-		reply.Term = 0
+		reply.Term = rf.term
 		reply.Commited = 0
 		rf.mu.Unlock()
 		rf.sendReply(&reply)
@@ -295,15 +294,21 @@ func (rf *Raft) stepAppendEntries(args *AppendMessage) {
 	}
 
 	if args.MsgType == MsgHeartbeat {
+		fmt.Printf("%d(%d) access Heartbeat from %d(%d) to %d\n", rf.me, rf.raftLog.commited,
+			args.From, args.Commited, args.To)
 		rf.handleHeartbeat(args, &reply)
 	} else {
+		fmt.Printf("%d(%d) access Append from %d(%d) to %d\n", rf.me, rf.raftLog.commited,
+			args.From, args.Commited, args.To)
 		rf.handleAppendEntries(args, &reply)
 	}
 	if rf.raftLog.applied < rf.raftLog.commited && rf.raftLog.commited < len(rf.raftLog.Entries) {
 		for _, e := range rf.raftLog.Entries[rf.raftLog.applied+1 : rf.raftLog.commited+1] {
-			//if len(e.Data) > 0 {
+			m := rf.createApplyMsg(e)
+			if m.CommandValid {
+				fmt.Printf("%d reply an entry of log[%d]=%d\n", rf.me, m.CommandIndex, m.Command.(int))
+			}
 			rf.applySM <- rf.createApplyMsg(e)
-			//}
 		}
 		rf.raftLog.applied = rf.raftLog.commited
 	}
@@ -482,21 +487,16 @@ func (rf *Raft) sendReply(reply *AppendReply) {
 	rf.peers[reply.To].Call("Raft.AppendEntriesResponse", reply, &done)
 }
 
-func (rf *Raft) sendAppendEntries(msg AppendMessage) bool {
-	var done DoneReply
-	ok := rf.peers[msg.To].Call("Raft.AppendEntries", &msg, &done)
-	if ok {
-		fmt.Printf("send append msg from %d to %d, at %d\n", msg.From, msg.To, rf.ts)
-	}
-	return ok
-}
-
 func (rf *Raft) handleAppendReply(reply* AppendReply) {
 	fmt.Printf("%d handleAppendReply from %d at %d\n", rf.me, reply.From, rf.ts)
-	if !rf.checkTerm(reply.From, reply.Term, MsgAppendReply) || rf.state != Leader {
+	if !rf.checkTerm(reply.From, reply.Term, reply.MsgType) || rf.state != Leader {
 		return
 	}
 	rf.actives[reply.From] = true
+	if reply.MsgType == MsgHeartbeatReply {
+		fmt.Printf("%d access  HeartbeatReply from %d\n", rf.me, reply.From)
+		return
+	}
 	if !reply.Success {
 		fmt.Printf("%d(%d) handleAppendReply failed, from %d(%d)\n", rf.me, rf.term, reply.From, reply.Term)
 		rf.nextIndex[reply.From] --
@@ -504,7 +504,7 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(reply.From)
 		fmt.Printf("%d send again handleAppendReply since %d\n", rf.me, msg.PrevLogIndex)
 		msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-		rf.sendAppendEntries(msg)
+		rf.clients[msg.To].Send(msg, true)
 	} else {
 		if rf.matchIndex[reply.From] < reply.Commited {
 			rf.matchIndex[reply.From] = reply.Commited
@@ -530,16 +530,17 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		if rf.raftLog.commited < commits[quorum] {
 			rf.raftLog.commited = commits[quorum]
 			for _, e := range rf.raftLog.GetUnApplyEntry() {
-				rf.applySM <- rf.createApplyMsg(e)
+				m := rf.createApplyMsg(e)
+				rf.applySM <- m
 				if e.Index != rf.raftLog.applied + 1 {
 					fmt.Printf("%d APPLY ERROR! %d, %d\n", rf.me, e.Index, rf.raftLog.applied)
 				}
 				rf.raftLog.applied += 1
+				if m.CommandValid {
+					fmt.Printf("%d apply a message of log[%d] = %d\n", rf.me, m.CommandIndex, m.Command.(int))
+				}
 			}
 			//rf.broadcast()
-			if rf.lastHeartBeat < 50 {
-				rf.lastHeartBeat += 50
-			}
 			fmt.Printf("%d apply message\n", rf.me)
 		}
 		fmt.Printf("%d send handleAppendReply end\n", rf.me)
@@ -682,22 +683,20 @@ func (rf *Raft) broadcast() {
 			msg.To = id
 			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(id)
 			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-			rf.sendAppendEntries(msg)
+			rf.clients[msg.To].Send(msg, true)
 		}
 	}
 }
 
-func (rf *Raft) leaderBroadCast() {
-	fmt.Printf("%d: HeartBeat! %d\n", rf.me, rf.ts)
-	defer fmt.Printf("%d: EndHeartBeat! %d\n", rf.me, rf.ts)
-	msg := rf.createMessage(0, MsgHeartbeat)
+func (rf *Raft) leaderBroadCast(msg AppendMessage) {
 	//rf.mu.Unlock()
 	for idx, _ := range rf.peers {
 		if idx != rf.me {
 			msg.To = idx
 			//time.Sleep(10 * time.Millisecond)
 			//go rf.sendHeartbeat(msg)
-			rf.sendAppendEntries(msg)
+			fmt.Printf("%d: broadcast heartbeat to %d\n", rf.me, idx)
+			rf.clients[msg.To].Send(msg, false)
 		}
 	}
 }
@@ -762,10 +761,12 @@ func (rf *Raft) step() {
 	for {
 		rf.mu.Lock()
 		if rf.state == Leader {
-			if rf.lastHeartBeat > 200 {
+			if rf.lastHeartBeat > 150 {
 				rf.lastHeartBeat = 0
-				rf.leaderBroadCast() // unlock in broad heartbeat
-				//continue
+				msg := rf.createMessage(0, MsgHeartbeat)
+				rf.mu.Unlock()
+				rf.leaderBroadCast(msg) // unlock in broad heartbeat
+				continue
 			} else if rf.lastElection > 1000 {
 				rf.lastElection = 0
 				rf.maybeLose()
@@ -818,11 +819,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.msgChan = make(chan AppendMessage, 1000)
 	rf.replyChan = make(chan AppendReply, 1000)
 	rf.votes = make([]int, len(rf.peers))
-	rf.leader = -1
 	rf.actives = make([]bool, len(rf.peers))
 	// Your initialization code here.
 	rf.becomeFollower(0, -1)
 	rf.readPersist(persister.ReadRaftState())
+	rf.clients = make([]RaftClient, len(rf.peers))
+	for idx := range rf.clients {
+		if idx != rf.me {
+			rf.clients[idx].id = idx
+			rf.clients[idx].Start()
+			rf.clients[idx].peer = rf.peers[idx]
+		}
+	}
+
 	go rf.step()
 	go rf.send()
 	fmt.Printf("%d : random election timeout: %d\n", rf.me, rf.rdElectionTimeout)
