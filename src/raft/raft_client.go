@@ -33,7 +33,7 @@ func (cl *RaftClient) Start() {
 }
 
 func (cl *RaftClient) Send(msg AppendMessage, force bool) {
-	if !force && atomic.LoadInt32(&cl.pending) > 1 {
+	if !force && atomic.LoadInt32(&cl.pending) > 100 {
 		return
 	}
 	atomic.AddInt32(&cl.pending, 1)

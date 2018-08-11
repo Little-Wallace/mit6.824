@@ -29,3 +29,11 @@ func (log *UnstableLog) GetUnApplyEntry() []Entry {
 	return log.Entries[log.applied + 1 : log.commited + 1]
 }
 
+
+func (log *UnstableLog) MaybeCommit(index int) bool {
+	if index > log.commited {
+		log.commited = index
+		return true
+	}
+	return false
+}

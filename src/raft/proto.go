@@ -10,7 +10,34 @@ const (
 	MsgAppendReply
 	MsgAppend
 	MsgRequestVote
+	MsgRequestVoteReply
+	MsgRequestPrevote
+	MsgRequestPrevoteReply
 )
+
+func getMsgName(msgType MessageType) string {
+	if msgType == MsgStop {
+		return "Stop"
+	} else if msgType == MsgRequestVote {
+		return "RequestVote"
+	} else if msgType == MsgRequestPrevote {
+		return "RequestPreVote"
+	} else if msgType == MsgRequestVoteReply {
+		return "RequestVoteReply"
+	} else if msgType == MsgRequestPrevoteReply {
+		return "RequestPreVoteReply"
+	} else if msgType == MsgAppend {
+		return "AppendEntry"
+	} else if msgType == MsgAppendReply {
+		return "AppendReply"
+	} else if msgType == MsgHeartbeat {
+		return "Heartbeat"
+	} else if msgType == MsgHeartbeatReply {
+		return "HeartbeatReplly"
+	} else {
+		return "Unkown"
+	}
+}
 
 type AppendMessage struct {
 	MsgType			MessageType
@@ -34,6 +61,7 @@ type AppendReply struct {
 
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	MsgType			MessageType
 	Term			int
 	From			int
 	To 				int
@@ -43,6 +71,7 @@ type RequestVoteArgs struct {
 
 type RequestVoteReply struct {
 	// Your data here (2A).
+	MsgType		MessageType
 	Term		int
 	To 			int
 	VoteGranted	bool
