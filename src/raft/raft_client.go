@@ -11,16 +11,24 @@ type RaftClient struct {
 	peer  	*labrpc.ClientEnd
 	msgChan chan AppendMessage
 	pending int32
+	next 	int
+	matched int
+	active	bool
+	stop	bool
 }
 
 
 func (cl *RaftClient) Start() {
 	cl.msgChan = make(chan AppendMessage, 100)
+	cl.stop = false
 	go func() {
 		var done DoneReply
-		for {
+		for !cl.stop{
 			select {
 			case msg := <- cl.msgChan : {
+				if msg.MsgType == MsgStop {
+					return
+				}
 				ok := cl.peer.Call("Raft.AppendEntries", &msg, &done)
 				if ok {
 					fmt.Printf("send append msg from %d to %d\n", msg.From, msg.To)
@@ -30,6 +38,10 @@ func (cl *RaftClient) Start() {
 			}
 		}
 	}()
+}
+
+func (cl *RaftClient) Stop() {
+	cl.stop = true
 }
 
 func (cl *RaftClient) Send(msg AppendMessage, force bool) {

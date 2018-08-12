@@ -15,30 +15,6 @@ const (
 	MsgRequestPrevoteReply
 )
 
-func getMsgName(msgType MessageType) string {
-	if msgType == MsgStop {
-		return "Stop"
-	} else if msgType == MsgRequestVote {
-		return "RequestVote"
-	} else if msgType == MsgRequestPrevote {
-		return "RequestPreVote"
-	} else if msgType == MsgRequestVoteReply {
-		return "RequestVoteReply"
-	} else if msgType == MsgRequestPrevoteReply {
-		return "RequestPreVoteReply"
-	} else if msgType == MsgAppend {
-		return "AppendEntry"
-	} else if msgType == MsgAppendReply {
-		return "AppendReply"
-	} else if msgType == MsgHeartbeat {
-		return "Heartbeat"
-	} else if msgType == MsgHeartbeatReply {
-		return "HeartbeatReplly"
-	} else {
-		return "Unkown"
-	}
-}
-
 type AppendMessage struct {
 	MsgType			MessageType
 	Term			int
@@ -78,4 +54,34 @@ type RequestVoteReply struct {
 }
 
 type DoneReply struct {}
+
+type HardState struct {
+	term 		int
+	vote 		int
+	commited	int
+}
+
+func getMsgName(msgType MessageType) string {
+	if msgType == MsgStop {
+		return "Stop"
+	} else if msgType == MsgRequestVote {
+		return "RequestVote"
+	} else if msgType == MsgRequestPrevote {
+		return "RequestPreVote"
+	} else if msgType == MsgRequestVoteReply {
+		return "RequestVoteReply"
+	} else if msgType == MsgRequestPrevoteReply {
+		return "RequestPreVoteReply"
+	} else if msgType == MsgAppend {
+		return "AppendEntry"
+	} else if msgType == MsgAppendReply {
+		return "AppendReply"
+	} else if msgType == MsgHeartbeat {
+		return "Heartbeat"
+	} else if msgType == MsgHeartbeatReply {
+		return "HeartbeatReplly"
+	} else {
+		return "Unkown"
+	}
+}
 

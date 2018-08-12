@@ -1,5 +1,7 @@
 package raft
 
+import "fmt"
+
 type Entry struct {
 	Data []byte
 	Term int
@@ -22,7 +24,14 @@ func (log *UnstableLog) GetLastTerm() int {
 }
 
 func (log *UnstableLog) IsUpToDate(Index int, Term int) bool {
-	return Term > log.GetLastTerm() || (Term == log.GetLastTerm() && Index >= log.GetLastIndex())
+	ans := false
+//	return Term > log.GetLastTerm() || (Term == log.GetLastTerm() && Index >= log.GetLastIndex())
+	if Term > log.GetLastTerm() || (Term == log.GetLastTerm() && Index >= log.GetLastIndex()) {
+		ans = true
+	}
+	fmt.Printf("len: %d, term: %d, last term: %d, index: %d, lastIndex: %d, result: %t\n", len(log.Entries), Term, log.GetLastTerm(),
+		Index, log.GetLastIndex(), ans)
+	return ans
 }
 
 func (log *UnstableLog) GetUnApplyEntry() []Entry {
