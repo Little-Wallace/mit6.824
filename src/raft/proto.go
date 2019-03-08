@@ -23,6 +23,7 @@ type AppendMessage struct {
 	Commited		int
 	PrevLogIndex 	int
 	PrevLogTerm		int
+	Id          	int
 	Entries			[]Entry
 }
 
@@ -32,6 +33,7 @@ type AppendReply struct {
 	From		int
 	To 			int
 	Commited	int
+	Id          int
 	Success		bool
 }
 

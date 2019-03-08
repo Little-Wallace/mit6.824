@@ -3,20 +3,17 @@ package raft
 import (
 	"labrpc"
 	"fmt"
-	"sync/atomic"
 )
 
 type RaftClient struct {
 	id 		int
 	peer  	*labrpc.ClientEnd
 	msgChan chan AppendMessage
-	pending int32
-	prevIndex int
 	next 	int
 	matched int
 	active	bool
 	stop	bool
-	term    *int
+	raft  	*Raft
 }
 
 
@@ -24,33 +21,37 @@ func (cl *RaftClient) Start() {
 	cl.msgChan = make(chan AppendMessage, 100)
 	cl.stop = false
 	go func() {
-		var done DoneReply
+		idx := 0
 		for !cl.stop{
 			select {
 			case msg := <- cl.msgChan : {
-				if msg.MsgType == MsgStop {
+				if msg.MsgType == MsgStop || cl.stop {
+					fmt.Printf("Stop client\n")
 					return
 				}
-				if msg.Term != *cl.term {
+				if msg.Term != cl.raft.term {
+					fmt.Printf("skip append msg from %d to %d which term(%d) is less than raft %d\n", msg.From, msg.To, msg.Term, cl.raft.term)
 					break
 				}
-				if msg.MsgType == MsgAppend {
-					atomic.AddInt32(&cl.pending, -1)
-					if cl.pending > 0 && cl.prevIndex == msg.PrevLogIndex{
-						continue
-					}
-				}
-				ok := cl.peer.Call("Raft.AppendEntries", &msg, &done)
+				msg.Id = idx
+				idx += 1
+				var reply AppendReply
+				ok := cl.peer.Call("Raft.AppendEntries", &msg, &reply)
 				if ok {
 					fmt.Printf("send append msg from %d to %d\n", msg.From, msg.To)
+					cl.raft.handleAppendReply(&reply)
 				}
 			}
 			}
 		}
+		fmt.Printf("Stop client\n")
 	}()
 }
 
 func (cl *RaftClient) Stop() {
+	var msg AppendMessage
+	msg.MsgType = MsgStop
+	cl.msgChan <- msg
 	cl.stop = true
 }
 
@@ -58,10 +59,6 @@ func (cl *RaftClient) Send(msg AppendMessage) {
 	//if !force && atomic.LoadInt32(&cl.pending) > 100 {
 	//	return
 	//}
-	if msg.MsgType == MsgAppend {
-		atomic.AddInt32(&cl.pending, 1)
-		cl.prevIndex = msg.PrevLogIndex
-	}
 	cl.msgChan <- msg
 }
 
