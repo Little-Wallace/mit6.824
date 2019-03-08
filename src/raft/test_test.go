@@ -374,7 +374,6 @@ func TestBackup2B(t *testing.T) {
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
-		fmt.Printf("===================step1.5 one %d===================\n", i)
 		cfg.one(rand.Int(), 3, true)
 	}
 
@@ -402,22 +401,16 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect((leader1 + 1) % servers)
 	cfg.connect(other)
 
-	fmt.Printf("===================step2.5===================\n")
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
 		cfg.one(rand.Int(), 3, true)
-		if i % 10 == 0 {
-			fmt.Printf("===================step2.5 one %d===================\n", i)
-		}
 	}
 
-	fmt.Printf("===================step3===================\n")
 	// now everyone
 	for i := 0; i < servers; i++ {
 		cfg.connect(i)
 	}
 	cfg.one(rand.Int(), servers, true)
-	fmt.Printf("===================step4===================\n")
 
 	cfg.end()
 }

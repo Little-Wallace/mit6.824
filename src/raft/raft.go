@@ -87,7 +87,7 @@ type Raft struct {
 	electionTimeout int32
 	rdElectionTimeout int32
 	lastHeartBeat int32
-	lastElection int32
+	lastElection time.Time
 	applySM    chan ApplyMsg
 	msgChan    chan AppendMessage
 	replyChan  chan AppendReply
@@ -105,7 +105,7 @@ func (rf *Raft) reset(term int)  {
 		rf.votes[idx] = -1
 	}
 	rf.lastHeartBeat = 0
-	rf.lastElection = 0
+	rf.lastElection = time.Now()
 	rf.vote = -1
 }
 
@@ -199,7 +199,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = args.Term
 		if args.MsgType == MsgRequestVote {
 			rf.vote = args.From
-			rf.lastElection = 0
+			rf.lastElection = time.Now()
 		}
 		return
 	}
@@ -225,7 +225,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 		return
 	}
 	rf.leader = args.From
-	rf.lastElection = 0
+	rf.lastElection = time.Now()
 	if args.MsgType == MsgHeartbeat {
 		fmt.Printf("%d(commit: %d, applied: %d, total: %d) access Heartbeat from %d(%d) to %d\n", rf.me, rf.raftLog.commited,
 			rf.raftLog.applied, len(rf.raftLog.Entries), args.From, args.Commited, args.To)
@@ -615,15 +615,15 @@ func (rf *Raft) checkAppend(from int, term int, msgType MessageType) bool {
 func (rf *Raft) checkVote(from int, term int, msgType MessageType, accept* bool) bool {
 	if term > rf.term {
 		if msgType == MsgRequestVote || msgType == MsgRequestPrevote{
-			if rf.lastElection < rf.electionTimeout && rf.leader != -1 {
-				fmt.Printf("%d(%d) reject a msg (%s) from %d, term:%d. leader %d, lastele: %d\n",
-					rf.me, rf.term, getMsgName(msgType), from, term, rf.leader, rf.lastElection)
+			if rf.passed_election_time(rf.electionTimeout, time.Now()) && rf.leader != -1 {
+				fmt.Printf("%d(%d) reject a msg (%s) from %d, term:%d. leader %d\n",
+					rf.me, rf.term, getMsgName(msgType), from, term, rf.leader)
 				*accept = false
 				return false
 			}
 		}
-		fmt.Printf("%d(%d) receive a larger term(%d) from %d of %s, current leader: %d, ele %d\n",
-			rf.me, rf.term, term, from, getMsgName(msgType), rf.leader, rf.lastElection)
+		fmt.Printf("%d(%d) receive a larger term(%d) from %d of %s, current leader: %d\n",
+			rf.me, rf.term, term, from, getMsgName(msgType), rf.leader)
 		if msgType == MsgRequestPrevote || (msgType == MsgRequestPrevoteReply && *accept == true) {
 
 		} else {
@@ -692,7 +692,7 @@ func (rf *Raft) becomeLeader() {
 	rf.state = Leader
 	rf.leader = rf.me
 	rf.lastHeartBeat = 0
-	rf.lastElection = 0
+	rf.lastElection = time.Now()
 }
 
 func (rf *Raft) becomeCandidate(msgType MessageType) int {
@@ -705,7 +705,7 @@ func (rf *Raft) becomeCandidate(msgType MessageType) int {
 		rf.votes[rf.me] = 1
 		rf.vote = rf.me
 	}
-	fmt.Printf("%d become %s candidate, %d\n", rf.me, getMsgName(msgType), rf.lastElection)
+	fmt.Printf("%d become %s candidate, %v\n", rf.me, getMsgName(msgType), rf.lastElection)
 	return term
 }
 
@@ -835,13 +835,14 @@ func (rf *Raft) campaign(msgType MessageType) {
 	}
 }
 
-func (rf *Raft) resetElection() {
-	//rf.lastElection = time.Now()
+func (rf *Raft) passed_election_time(electionTimeout int32, now time.Time) bool {
+	return rf.lastElection.Add(time.Duration(electionTimeout) * time.Millisecond).Before(now)
 }
 
 func (rf *Raft) step() {
 	for atomic.LoadInt32(&rf.stop) != 1{
 		rf.mu.Lock()
+		now := time.Now()
 		if rf.state == Leader {
 			if rf.lastHeartBeat > 200 {
 				rf.lastHeartBeat = 0
@@ -850,19 +851,18 @@ func (rf *Raft) step() {
 				rf.mu.Unlock()
 				rf.bcastHeartbeat(msg)
 				continue
-			} else if rf.lastElection > rf.electionTimeout {
-
-				rf.lastElection = 0
+			} else if rf.passed_election_time(rf.electionTimeout, now) {
+				//rf.resetElection(now)
+				rf.lastElection = now
 				rf.maybeLose()
 				rf.maybeChange()
 			}
-		} else if rf.lastElection >= rf.rdElectionTimeout {
-			rf.lastElection = 0
+		} else if rf.passed_election_time(rf.rdElectionTimeout, now) {
+			rf.lastElection = now
 			rf.campaign(MsgRequestPrevote)
 			continue
 		}
 		rf.lastHeartBeat += 50
-		rf.lastElection += 50
 		rf.mu.Unlock()
 		//fmt.Printf("Sleep 50ms\n");
 		time.Sleep(time.Duration(50) * time.Millisecond)
@@ -903,7 +903,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 	electionTimes[rf.rdElectionTimeout] = true
 	rf.lastHeartBeat = 0
-	rf.lastElection = 0
+	rf.lastElection = time.Now()
 	rf.stop = 0
 	rf.applySM = applyCh
 	rf.msgChan = make(chan AppendMessage, 1000)
