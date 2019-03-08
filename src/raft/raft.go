@@ -594,7 +594,7 @@ func (rf *Raft) appendMore(idx int) {
 	msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(rf.clients[idx].next)
 	fmt.Printf("%d send again handleAppendReply since %d\n", rf.me, msg.PrevLogIndex)
 	msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-	rf.clients[msg.To].Send(msg, true)
+	rf.clients[msg.To].Send(msg)
 }
 
 func (rf *Raft) checkAppend(from int, term int, msgType MessageType) bool {
@@ -764,12 +764,16 @@ func (rf *Raft) broadcast() {
 		if id != int(rf.me) {
 			msg.To = id
 			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(pr.next)
+			if len(msg.Entries) == 0 {
+				continue
+			}
 			msg.Commited = MinInt(rf.raftLog.commited, pr.matched)
 			fmt.Printf("%d: broadcast append to %d since %d\n", rf.me, id, pr.next)
 			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-			rf.clients[msg.To].Send(msg, true)
+			rf.clients[msg.To].Send(msg)
 		}
 	}
+	rf.lastHeartBeat = 0
 }
 
 func (rf *Raft) bcastHeartbeat(msg AppendMessage) {
@@ -778,7 +782,7 @@ func (rf *Raft) bcastHeartbeat(msg AppendMessage) {
 			msg.To = idx
 			msg.Commited = MinInt(pr.matched, rf.raftLog.commited)
 			fmt.Printf("%d: broadcast heartbeat to %d, commit to min(%d, %d)\n", rf.me, idx, pr.matched, rf.raftLog.commited)
-			rf.clients[msg.To].Send(msg, true)
+			rf.clients[msg.To].Send(msg)
 		}
 	}
 }
@@ -860,7 +864,7 @@ func (rf *Raft) step() {
 	for atomic.LoadInt32(&rf.stop) != 1{
 		rf.mu.Lock()
 		if rf.state == Leader {
-			if rf.lastHeartBeat > 200 {
+			if rf.lastHeartBeat > 190 {
 				rf.lastHeartBeat = 0
 				msg := rf.createMessage(0, MsgHeartbeat)
 				// unlock in broad heartbeat
@@ -928,6 +932,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		if idx != rf.me {
 			rf.clients[idx].id = idx
 			rf.clients[idx].peer = rf.peers[idx]
+			rf.clients[idx].term = &rf.term
 		}
 	}
 

@@ -11,10 +11,12 @@ type RaftClient struct {
 	peer  	*labrpc.ClientEnd
 	msgChan chan AppendMessage
 	pending int32
+	prevIndex int
 	next 	int
 	matched int
 	active	bool
 	stop	bool
+	term    *int
 }
 
 
@@ -29,11 +31,19 @@ func (cl *RaftClient) Start() {
 				if msg.MsgType == MsgStop {
 					return
 				}
+				if msg.Term != *cl.term {
+					break
+				}
+				if msg.MsgType == MsgAppend {
+					atomic.AddInt32(&cl.pending, -1)
+					if cl.pending > 0 && cl.prevIndex == msg.PrevLogIndex{
+						continue
+					}
+				}
 				ok := cl.peer.Call("Raft.AppendEntries", &msg, &done)
 				if ok {
 					fmt.Printf("send append msg from %d to %d\n", msg.From, msg.To)
 				}
-				atomic.AddInt32(&cl.pending, -1)
 			}
 			}
 		}
@@ -44,11 +54,14 @@ func (cl *RaftClient) Stop() {
 	cl.stop = true
 }
 
-func (cl *RaftClient) Send(msg AppendMessage, force bool) {
-	if !force && atomic.LoadInt32(&cl.pending) > 100 {
-		return
+func (cl *RaftClient) Send(msg AppendMessage) {
+	//if !force && atomic.LoadInt32(&cl.pending) > 100 {
+	//	return
+	//}
+	if msg.MsgType == MsgAppend {
+		atomic.AddInt32(&cl.pending, 1)
+		cl.prevIndex = msg.PrevLogIndex
 	}
-	atomic.AddInt32(&cl.pending, 1)
 	cl.msgChan <- msg
 }
 
