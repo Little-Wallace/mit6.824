@@ -754,7 +754,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 
 	cfg.one(rand.Int()%10000, 1, true)
 
-	fmt.Printf("first step.......................")
+	fmt.Printf("======================first step\n")
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
 		if iters == 200 {
@@ -790,21 +790,29 @@ func TestFigure8Unreliable2C(t *testing.T) {
 		}
 	}
 
-	fmt.Printf("final step.......................")
+	fmt.Printf("===========================final step connect\n")
 	for i := 0; i < servers; i++ {
 		if cfg.connected[i] == false {
 			cfg.connect(i)
 		}
 	}
 
-	fmt.Printf("final step.......................")
+	time.Sleep(time.Duration(1000) * time.Millisecond)
+
+	for i := 0; i < servers; i ++ {
+		log := &cfg.rafts[i].raftLog
+		fmt.Printf("==========log size: %d, commit: %d, applied : %d\n", len(log.Entries), log.commited, log.applied)
+		fmt.Printf("==========leader: %d, last index: %d, last term: %d\n", cfg.rafts[i].leader, log.GetLastIndex(), log.GetLastTerm())
+	}
+
 	cfg.one(rand.Int()%10000, servers, true)
+	fmt.Printf("=============================final step\n")
 
 	cfg.end()
+	fmt.Printf("===================end\n")
 }
 
 func internalChurn(t *testing.T, unreliable bool) {
-
 	servers := 5
 	cfg := make_config(t, servers, unreliable)
 	defer cfg.cleanup()
@@ -946,6 +954,7 @@ func internalChurn(t *testing.T, unreliable bool) {
 	}
 
 	cfg.end()
+	fmt.Printf("=============End success\n")
 }
 
 func TestReliableChurn2C(t *testing.T) {

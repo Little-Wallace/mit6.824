@@ -230,6 +230,7 @@ func (cfg *config) cleanup() {
 	}
 	cfg.net.Cleanup()
 	cfg.checkTimeout()
+	fmt.Printf("========cleanup===========\n")
 }
 
 // attach server i to the net.
@@ -448,7 +449,7 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 		}
 
 		if index != -1 {
-			fmt.Printf("Get a cmd %d in %d\n", cmd, index)
+			fmt.Printf("Store a cmd %d in %d\n", cmd, index)
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
 			t1 := time.Now()
@@ -472,6 +473,12 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 		}
 	}
 	fmt.Printf("Fail to get cmd %d\n", cmd)
+	for i := 0; i < cfg.n; i ++ {
+		l := &cfg.rafts[i].raftLog
+		fmt.Printf("==========log size: %d, commit: %d, applied : %d\n", len(l.Entries), l.commited, l.applied)
+		fmt.Printf("==========leader: %d, last index: %d, last term: %d\n", cfg.rafts[i].leader, l.GetLastIndex(), l.GetLastTerm())
+	}
+
 	cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 	return -1
 }

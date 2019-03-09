@@ -19,8 +19,8 @@ type RaftClient struct {
 
 
 func (cl *RaftClient) Start() {
-	cl.msgChan = make(chan AppendMessage, 100)
-	cl.voteChan = make(chan RequestVoteArgs, 100)
+	cl.msgChan = make(chan AppendMessage, 400)
+	cl.voteChan = make(chan RequestVoteArgs, 600)
 	cl.stop = false
 	go func() {
 		idx := 0
@@ -31,29 +31,25 @@ func (cl *RaftClient) Start() {
 					fmt.Printf("Stop client\n")
 					return
 				}
-				if msg.Term != cl.raft.term || cl.raft.leader != cl.raft.me {
-					fmt.Printf("skip append msg from %d to %d which term(%d) is less than raft %d\n", msg.From, msg.To, msg.Term, cl.raft.term)
+				if (msg.Term != cl.raft.term && msg.MsgType == MsgHeartbeat) || cl.raft.leader != cl.raft.me {
+					fmt.Printf("skip append msg from %d to %d which term(%d) is less than raft %d\n",
+						msg.From, msg.To, msg.Term, cl.raft.term)
 					break
 				}
 				msg.Id = idx
 				idx += 1
-				var reply AppendReply
-				ok := cl.peer.Call("Raft.AppendEntries", &msg, &reply)
-				if ok {
-					fmt.Printf("send append msg from %d to %d\n", msg.From, msg.To)
-					cl.raft.handleAppendReply(&reply)
-				}
+				cl.raft.sendAppendEntries(&msg)
 			}
 			case msg := <- cl.voteChan : {
 				if msg.MsgType == MsgStop || cl.stop {
 					fmt.Printf("Stop client\n")
 					return
 				}
-				if msg.Term < cl.raft.term {
+				if msg.Term < cl.raft.term || cl.raft.IsLeader() {
 					fmt.Printf("skip vote msg from %d to %d which term(%d) is less than raft %d\n", msg.From, msg.To, msg.Term, cl.raft.term)
 					break
 				}
-				cl.raft.sendRequestVote(msg)
+				cl.raft.sendRequestVote(&msg)
 			}
 			}
 		}
@@ -72,7 +68,19 @@ func (cl *RaftClient) Stop() {
 }
 
 func (cl *RaftClient) AppendAsync(msg AppendMessage) {
-	cl.msgChan <- msg
+	if msg.MsgType == MsgAppend {
+		cl.msgChan <- msg
+	} else {
+		select {
+		case cl.msgChan <- msg : {
+			fmt.Printf("bcast heartbeat failed. there is too much append message\n")
+		}
+		default:
+			return
+		}
+	}
+
+
 }
 
 func (cl *RaftClient) VoteAsync(msg RequestVoteArgs) {
@@ -80,7 +88,7 @@ func (cl *RaftClient) VoteAsync(msg RequestVoteArgs) {
 		case cl.voteChan <- msg : {
 		}
 	default:
-		fmt.Printf("Vote failed. there is too much vote message")
+		fmt.Printf("Vote failed. there is too much vote message\n")
 		return
 	}
 }
