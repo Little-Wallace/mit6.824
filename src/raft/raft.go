@@ -654,6 +654,7 @@ func (rf *Raft) Kill() {
 			rf.clients[idx].Stop()
 		}
 	}
+	delete(electionTimes, rf.rdElectionTimeout)
 }
 
 //
@@ -892,11 +893,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//rf.rdElectionTimeout = 1000
 	time.Sleep(time.Duration(rf.rdElectionTimeout) * time.Millisecond)
 	rf.electionTimeout = 900
-	rf.rdElectionTimeout = int32(900 + rand.Intn(7) * 80)
+	rf.rdElectionTimeout = int32(900 + rand.Intn(6) * 80)
 	for  {
 		if _, ok := electionTimes[rf.rdElectionTimeout]; ok {
 			//rf.rdElectionTimeout += 100
-			rf.rdElectionTimeout = int32(900 + rand.Intn(7) * 80)
+			rf.rdElectionTimeout = int32(900 + rand.Intn(7) * 60)
 		} else {
 			break
 		}
