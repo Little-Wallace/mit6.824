@@ -249,12 +249,6 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 	rf.maybeChange()
 }
 
-func (rf *Raft) AppendEntriesResponse(args *AppendReply, done* DoneReply) {
-	if atomic.LoadInt32(&rf.stop) != 1 {
-		rf.replyChan <- *args
-	}
-}
-
 func (rf *Raft) handleHeartbeat(msg *AppendMessage, reply *AppendReply)  {
 	reply.Success = true
 	reply.Term = MaxInt(rf.term, reply.Term)
@@ -429,10 +423,6 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 //
 
 func (rf *Raft) sendRequestVote(args RequestVoteArgs) bool {
-	if args.Term < rf.term {
-		fmt.Printf("failed to send request vote from %d to %d \n", args.From, args.To)
-		return true
-	}
 	var reply RequestVoteReply
 	if args.MsgType == MsgRequestPrevote {
 		reply.MsgType = MsgRequestPrevoteReply
@@ -443,16 +433,12 @@ func (rf *Raft) sendRequestVote(args RequestVoteArgs) bool {
 	ok := rf.peers[args.To].Call("Raft.RequestVote", &args, &reply)
 	reply.To = args.To
 	if ok {
-		//fmt.Printf("send request vote from %d to %d ok\n", args.From, args.To)
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		//fmt.Printf("send request vote from %d to %d get lock\n", args.From, args.To)
 		fmt.Printf("send request vote from %d to %d \n", args.From, args.To)
 		rf.handleVoteReply(&reply)
 	}
-	//fmt.Printf("send request vote from %d to %d at %d, result: %t\n", args.From, args.To, ts, ok)
 	return ok
-	//ok = rf.peers[server].Call("Raft.RequestVote", args, reply)
 }
 
 func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
@@ -587,17 +573,12 @@ func MinInt(a int, b int) int {
 }
 
 
-func (rf *Raft) sendReply(reply *AppendReply) {
-	var done DoneReply
-	rf.peers[reply.To].Call("Raft.AppendEntriesResponse", reply, &done)
-}
-
 func (rf *Raft) appendMore(idx int) {
 	msg := rf.createMessage(idx, MsgAppend)
 	msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(rf.clients[idx].next)
 	fmt.Printf("%d send again handleAppendReply to %d since %d, which matched %d\n", rf.me, idx, msg.PrevLogIndex, rf.clients[idx].matched)
 	msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-	rf.clients[msg.To].Send(msg)
+	rf.clients[msg.To].AppendAsync(msg)
 }
 
 func (rf *Raft) checkAppend(from int, term int, msgType MessageType) bool {
@@ -769,7 +750,7 @@ func (rf *Raft) broadcast() {
 			msg.Commited = MinInt(rf.raftLog.commited, pr.matched)
 			fmt.Printf("%d: broadcast append to %d since %d\n", rf.me, id, pr.next)
 			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-			rf.clients[msg.To].Send(msg)
+			rf.clients[msg.To].AppendAsync(msg)
 		}
 	}
 	rf.lastHeartBeat = 0
@@ -781,7 +762,7 @@ func (rf *Raft) bcastHeartbeat(msg AppendMessage) {
 			msg.To = idx
 			msg.Commited = MinInt(pr.matched, rf.raftLog.commited)
 			fmt.Printf("%d: broadcast heartbeat to %d, commit to min(%d, %d)\n", rf.me, idx, pr.matched, rf.raftLog.commited)
-			rf.clients[msg.To].Send(msg)
+			rf.clients[msg.To].AppendAsync(msg)
 		}
 	}
 }
@@ -830,7 +811,8 @@ func (rf *Raft) campaign(msgType MessageType) {
 			msg.LastLogIndex = lastLogIndex
 			msg.LastLogTerm = lastLogTerm
 			msg.To = idx
-			go rf.sendRequestVote(msg)
+			//go rf.sendRequestVote(msg)
+			rf.clients[idx].VoteAsync(msg)
 			//rf.argsChan <- msg
 		}
 	}
@@ -889,7 +871,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.prevState = HardState{0, -1, 0}
 	rf.term = 0
 	rf.vote = -1
-	rf.rdElectionTimeout = int32(100 + rand.Intn(20) * 200)
+	rf.rdElectionTimeout = int32(rand.Intn(10) * 50)
 	//rf.rdElectionTimeout = 1000
 	time.Sleep(time.Duration(rf.rdElectionTimeout) * time.Millisecond)
 	rf.electionTimeout = 900

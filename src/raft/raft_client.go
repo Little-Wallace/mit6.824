@@ -9,6 +9,7 @@ type RaftClient struct {
 	id 		int
 	peer  	*labrpc.ClientEnd
 	msgChan chan AppendMessage
+	voteChan chan RequestVoteArgs
 	next 	int
 	matched int
 	active	bool
@@ -19,6 +20,7 @@ type RaftClient struct {
 
 func (cl *RaftClient) Start() {
 	cl.msgChan = make(chan AppendMessage, 100)
+	cl.voteChan = make(chan RequestVoteArgs, 100)
 	cl.stop = false
 	go func() {
 		idx := 0
@@ -29,7 +31,7 @@ func (cl *RaftClient) Start() {
 					fmt.Printf("Stop client\n")
 					return
 				}
-				if msg.Term != cl.raft.term {
+				if msg.Term != cl.raft.term || cl.raft.leader != cl.raft.me {
 					fmt.Printf("skip append msg from %d to %d which term(%d) is less than raft %d\n", msg.From, msg.To, msg.Term, cl.raft.term)
 					break
 				}
@@ -42,6 +44,17 @@ func (cl *RaftClient) Start() {
 					cl.raft.handleAppendReply(&reply)
 				}
 			}
+			case msg := <- cl.voteChan : {
+				if msg.MsgType == MsgStop || cl.stop {
+					fmt.Printf("Stop client\n")
+					return
+				}
+				if msg.Term < cl.raft.term {
+					fmt.Printf("skip vote msg from %d to %d which term(%d) is less than raft %d\n", msg.From, msg.To, msg.Term, cl.raft.term)
+					break
+				}
+				cl.raft.sendRequestVote(msg)
+			}
 			}
 		}
 		fmt.Printf("Stop client\n")
@@ -51,14 +64,24 @@ func (cl *RaftClient) Start() {
 func (cl *RaftClient) Stop() {
 	var msg AppendMessage
 	msg.MsgType = MsgStop
+	var v RequestVoteArgs
+	v.MsgType = MsgStop
 	cl.msgChan <- msg
+	cl.voteChan <- v
 	cl.stop = true
 }
 
-func (cl *RaftClient) Send(msg AppendMessage) {
-	//if !force && atomic.LoadInt32(&cl.pending) > 100 {
-	//	return
-	//}
+func (cl *RaftClient) AppendAsync(msg AppendMessage) {
 	cl.msgChan <- msg
+}
+
+func (cl *RaftClient) VoteAsync(msg RequestVoteArgs) {
+	select {
+		case cl.voteChan <- msg : {
+		}
+	default:
+		fmt.Printf("Vote failed. there is too much vote message")
+		return
+	}
 }
 
