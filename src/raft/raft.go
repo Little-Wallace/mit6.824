@@ -186,16 +186,22 @@ func (rf *Raft) readPersist(data []byte) {
 //
 // example RequestVote RPC handler.
 //
+func calcRuntime(t time.Time, f string) {
+	now := time.Now()
+	fmt.Printf("%s cost %f millisecond\n", f, now.Sub(t).Seconds() * 1000)
+}
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	start := time.Now()
+	defer calcRuntime(start, "RequestVote")
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.maybeChange()
 	reply.To = rf.me
-	fmt.Printf("%d(%d) AccessRequest(%s) vote from %d(%d)\n", rf.me, rf.term, getMsgName(args.MsgType), args.From, args.Term)
+	//fmt.Printf("%d(%d) AccessRequest(%s) vote from %d(%d)\n", rf.me, rf.term, getMsgName(args.MsgType), args.From, args.Term)
 	if !rf.checkVote(args.From, args.Term, args.MsgType, &reply.VoteGranted) || rf.state == Leader {
 		reply.Term = rf.term
-		fmt.Printf("%d %d reject smaller term: %d\n", rf.me, rf.term, args.Term)
+		//fmt.Printf("%d %d reject smaller term: %d\n", rf.me, rf.term, args.Term)
 		return
 	}
 	if ((rf.leader == -1 && rf.vote == -1) || rf.vote == args.From ||
@@ -211,12 +217,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 		return
 	}
-	fmt.Printf("%d reject vote for: %d, leader: %d, vote: %d\n", rf.me, args.From, rf.leader, rf.vote)
+	//fmt.Printf("%d reject vote for: %d, leader: %d, vote: %d\n", rf.me, args.From, rf.leader, rf.vote)
 	reply.VoteGranted = false
 	reply.Term = rf.term
 }
 
 func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
+	start := time.Now()
+	defer calcRuntime(start, "AppendEntries")
 	rf.mu.Lock()
 	reply.To = args.From
 	reply.From = rf.me
@@ -333,13 +341,13 @@ func getResponseType(msg MessageType) MessageType {
 }
 
 func (rf *Raft) handleAppendReply(reply* AppendReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	start := time.Now()
+	defer calcRuntime(start, "handleAppendReply")
 	fmt.Printf("%d handleAppendReply from %d at\n", rf.me, reply.From)
 	if !rf.checkAppend(reply.From, reply.Term, reply.MsgType) {
 		return
 	}
-	if rf.leader != rf.me {
+	if rf.leader != rf.me || rf.state != Leader{
 		return
 	}
 	pr := &rf.clients[reply.From]
@@ -401,7 +409,6 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 			fmt.Printf("%d apply message\n", rf.me)
 		}
 		fmt.Printf("%d send handleAppendReply end\n", rf.me)
-		rf.maybeChange()
 	}
 }
 
@@ -468,19 +475,21 @@ func (rf *Raft) sendRequestVote(args* RequestVoteArgs) bool {
 	ok := rf.peers[args.To].Call("Raft.RequestVote", args, &reply)
 	reply.To = args.To
 	if ok {
+		if rf.leader != -1 && (rf.state == Follower || rf.state == Leader) {
+			fmt.Printf("skip request vote from %d to %d \n", args.From, args.To)
+			return ok
+		}
 		rf.voteChan <- reply
 		fmt.Printf("send request vote from %d to %d \n", args.From, args.To)
-		//rf.handleVoteReply(&reply)
 	}
 	return ok
 }
 
 func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	fmt.Printf("%d(%d): receive vote reply from %d(%d), state: %d\n",
 		rf.me, rf.term, reply.To, reply.Term, rf.state)
-	defer rf.maybeChange()
+	start := time.Now()
+	defer calcRuntime(start, "handleVoteReply")
 	if !rf.checkVote(reply.To, reply.Term, reply.MsgType, &reply.VoteGranted) {
 		return
 	}
@@ -614,9 +623,10 @@ func MinInt(a int, b int) int {
 func (rf *Raft) appendMore(idx int) {
 	msg := rf.createMessage(idx, MsgAppend)
 	msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(rf.clients[idx].next)
-	fmt.Printf("%d send again handleAppendReply to %d since %d, which matched %d\n",
-		rf.me, idx, msg.PrevLogIndex, rf.clients[idx].matched)
+	fmt.Printf("%d send again handleAppendReply to %d since %d, which matched (%d, %d)\n",
+		rf.me, idx, rf.clients[idx].next, rf.clients[idx].matched, rf.raftLog.commited)
 	msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
+	msg.Commited = rf.raftLog.commited
 	rf.clients[msg.To].AppendAsync(msg)
 }
 
@@ -636,14 +646,14 @@ func (rf *Raft) checkVote(from int, term int, msgType MessageType, accept* bool)
 	if term > rf.term {
 		if msgType == MsgRequestVote || msgType == MsgRequestPrevote{
 			if rf.passed_election_time(rf.electionTimeout, time.Now()) && rf.leader != -1 {
-				fmt.Printf("%d(%d) reject a msg (%s) from %d, term:%d. leader %d\n",
-					rf.me, rf.term, getMsgName(msgType), from, term, rf.leader)
+				//fmt.Printf("%d(%d) reject a msg (%s) from %d, term:%d. leader %d\n",
+				//	rf.me, rf.term, getMsgName(msgType), from, term, rf.leader)
 				*accept = false
 				return false
 			}
 		}
-		fmt.Printf("%d(%d) receive a larger term(%d) from %d of %s, current leader: %d\n",
-			rf.me, rf.term, term, from, getMsgName(msgType), rf.leader)
+		//fmt.Printf("%d(%d) receive a larger term(%d) from %d of %s, current leader: %d\n",
+		//	rf.me, rf.term, term, from, getMsgName(msgType), rf.leader)
 		if msgType == MsgRequestPrevote || (msgType == MsgRequestPrevoteReply && *accept == true) {
 
 		} else {
@@ -788,7 +798,8 @@ func (rf *Raft) broadcast() {
 			if len(msg.Entries) == 0 {
 				continue
 			}
-			msg.Commited = MinInt(rf.raftLog.commited, pr.matched)
+			//msg.Commited = MinInt(rf.raftLog.commited, pr.matched)
+			msg.Commited = rf.raftLog.commited
 			fmt.Printf("%d: broadcast append to %d since %d\n", rf.me, id, pr.next)
 			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
 			rf.clients[msg.To].AppendAsync(msg)
@@ -884,30 +895,48 @@ func (rf *Raft) tick_follower() {
 	}
 }
 
+func (rf *Raft) doCallback() bool {
+	sz := 20
+	noMore := false
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	for i := 0; i < sz; i ++ {
+		select {
+		case msg := <- rf.voteChan : {
+			if msg.MsgType == MsgStop || rf.stop == 1 {
+				return false
+			}
+			if rf.state != Candidate && rf.state != PreCandidate && rf.leader != -1 {
+				break
+			}
+			rf.handleVoteReply(&msg)
+		}
+		case msg := <- rf.msgChan : {
+			if msg.MsgType == MsgStop || rf.stop == 1 {
+				return false
+			}
+			rf.handleAppendReply(&msg)
+		}
+		default:
+			noMore = true
+			break
+		}
+		if noMore {
+			break
+		}
+	}
+	rf.maybeChange()
+	return true
+}
+
 func (rf *Raft) step() {
 	//sz := len(rf.clients) - 1
 	//msgNum := sz
 	for atomic.LoadInt32(&rf.stop) != 1{
 		//ret := false
-		select {
-			case msg := <- rf.voteChan : {
-				if msg.MsgType == MsgStop || rf.stop == 1 {
-					return
-				}
-				if rf.state != Candidate && rf.state != PreCandidate && rf.leader != -1 {
-					break
-				}
-				rf.handleVoteReply(&msg)
-			}
-			case msg := <- rf.msgChan : {
-				if msg.MsgType == MsgStop || rf.stop == 1 {
-					return
-				}
-				rf.handleAppendReply(&msg)
-				//ret = true
-			}
-		default:
-			break
+		if !rf.doCallback() {
+			return
 		}
 		rf.mu.Lock()
 		if rf.state == Leader {
@@ -944,12 +973,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.rdElectionTimeout = int32(rand.Intn(10) * 50)
 	//rf.rdElectionTimeout = 1000
 	time.Sleep(time.Duration(rf.rdElectionTimeout) * time.Millisecond)
-	rf.electionTimeout = 1000
-	rf.rdElectionTimeout = int32(1000 + rand.Intn(6) * 80)
+	rf.electionTimeout = 800
+	rf.rdElectionTimeout = int32(800 + rand.Intn(5) * 40)
 	for  {
 		if _, ok := electionTimes[rf.rdElectionTimeout]; ok {
 			//rf.rdElectionTimeout += 100
-			rf.rdElectionTimeout = int32(1000 + rand.Intn(7) * 60)
+			rf.rdElectionTimeout = int32(800 + rand.Intn(5) * 40)
 		} else {
 			break
 		}

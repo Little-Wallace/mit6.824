@@ -797,7 +797,6 @@ func TestFigure8Unreliable2C(t *testing.T) {
 		}
 	}
 
-	time.Sleep(time.Duration(1000) * time.Millisecond)
 
 	for i := 0; i < cfg.n; i ++ {
 		l := &cfg.rafts[i].raftLog

@@ -48,7 +48,7 @@ func (cl *RaftClient) Start() {
 					fmt.Printf("Stop client\n")
 					return
 				}
-				if msg.Term < cl.raft.term || !cl.raft.IsCandidate() {
+				if !cl.raft.IsCandidate() {
 					fmt.Printf("skip vote msg from %d to %d which term(%d) is less than raft %d\n", msg.From, msg.To, msg.Term, cl.raft.term)
 					break
 				}
