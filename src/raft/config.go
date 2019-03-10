@@ -453,7 +453,7 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
 			t1 := time.Now()
-			for time.Since(t1).Seconds() < 2 {
+			for time.Since(t1).Seconds() < 4 {
 				nd, cmd1 := cfg.nCommitted(index)
 				if nd > 0 && nd >= expectedServers {
 					// committed
@@ -476,7 +476,11 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 	for i := 0; i < cfg.n; i ++ {
 		l := &cfg.rafts[i].raftLog
 		fmt.Printf("==========log size: %d, commit: %d, applied : %d\n", len(l.Entries), l.commited, l.applied)
-		fmt.Printf("==========leader: %d, last index: %d, last term: %d\n", cfg.rafts[i].leader, l.GetLastIndex(), l.GetLastTerm())
+		//fmt.Printf("==========leader: %d, last index: %d, last term: %d\n", cfg.rafts[i].leader, l.GetLastIndex(), l.GetLastTerm())
+		for j := 0; j < len(l.Entries); j ++ {
+			fmt.Printf("(%d,%d),", l.Entries[j].Index, l.Entries[j].Term)
+		}
+		fmt.Printf(",leader: %d\n", cfg.rafts[i].leader)
 	}
 
 	cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)

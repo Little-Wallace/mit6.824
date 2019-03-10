@@ -799,10 +799,14 @@ func TestFigure8Unreliable2C(t *testing.T) {
 
 	time.Sleep(time.Duration(1000) * time.Millisecond)
 
-	for i := 0; i < servers; i ++ {
-		log := &cfg.rafts[i].raftLog
-		fmt.Printf("==========log size: %d, commit: %d, applied : %d\n", len(log.Entries), log.commited, log.applied)
-		fmt.Printf("==========leader: %d, last index: %d, last term: %d\n", cfg.rafts[i].leader, log.GetLastIndex(), log.GetLastTerm())
+	for i := 0; i < cfg.n; i ++ {
+		l := &cfg.rafts[i].raftLog
+		fmt.Printf("==========log size: %d, commit: %d, applied : %d\n", len(l.Entries), l.commited, l.applied)
+		//fmt.Printf("==========leader: %d, last index: %d, last term: %d\n", cfg.rafts[i].leader, l.GetLastIndex(), l.GetLastTerm())
+		for j := 0; j < len(l.Entries); j ++ {
+			fmt.Printf("(%d,%d),", l.Entries[j].Index, l.Entries[j].Term)
+		}
+		fmt.Printf(",leader: %d\n", cfg.rafts[i].leader)
 	}
 
 	cfg.one(rand.Int()%10000, servers, true)

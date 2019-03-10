@@ -23,6 +23,24 @@ func (log *UnstableLog) GetLastTerm() int {
 	return log.Entries[len(log.Entries) - 1].Term
 }
 
+func (log *UnstableLog) Append(e Entry) {
+	if e.Index >= len(log.Entries) {
+		log.Entries = append(log.Entries, e)
+	} else {
+		log.Entries[e.Index] = e
+	}
+}
+
+func (log *UnstableLog) FindConflict(entries []Entry) int {
+	sz := len(log.Entries)
+	for _, e := range entries {
+		if e.Index >= sz || log.Entries[e.Index].Term != e.Term {
+			return e.Index
+		}
+	}
+	return 0
+}
+
 func (log *UnstableLog) IsUpToDate(Index int, Term int) bool {
 	ans := false
 //	return Term > log.GetLastTerm() || (Term == log.GetLastTerm() && Index >= log.GetLastIndex())

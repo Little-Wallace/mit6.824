@@ -113,6 +113,10 @@ func (rf *Raft) IsLeader() bool {
 	return rf.leader == rf.me && rf.state == Leader
 }
 
+func (rf *Raft) IsCandidate() bool {
+	return rf.state == Candidate || rf.state == PreCandidate
+}
+
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
 	rf.mu.Lock()
@@ -228,8 +232,12 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 		rf.mu.Unlock()
 		return
 	}
+
 	rf.leader = args.From
 	rf.lastElection = time.Now()
+	rf.state = Follower
+	fmt.Printf("%d(%d) access msg from %d(%d)\n", rf.me, rf.term,
+			args.From, args.Term)
 	if args.MsgType == MsgHeartbeat {
 		fmt.Printf("%d(commit: %d, applied: %d, total: %d) access Heartbeat from %d(%d) to %d\n", rf.me, rf.raftLog.commited,
 			rf.raftLog.applied, len(rf.raftLog.Entries), args.From, args.Commited, args.To)
@@ -277,27 +285,26 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 		return
 	}
 	if rf.raftLog.Entries[args.PrevLogIndex].Term == args.PrevLogTerm {
-		lastIndex := args.PrevLogIndex
-		for idx, e := range args.Entries {
-			if e.Index != idx + args.PrevLogIndex + 1{
-				fmt.Printf("%d(index: %d) =====append error entries from %d(prev index: %d)\n",
-					rf.me, index - 1, args.From, args.PrevLogIndex)
-				return
+		lastIndex := args.PrevLogIndex + len(args.Entries)
+		conflict_idx := rf.raftLog.FindConflict(args.Entries)
+		if conflict_idx == 0 {
+		} else if conflict_idx <= rf.raftLog.commited {
+			fmt.Printf("=============panic ERROR===%d, conflict log[%d]=%d, leader[%d]=%d\n", rf.me, conflict_idx,
+				rf.raftLog.Entries[conflict_idx].Term, conflict_idx, args.Entries[conflict_idx - args.PrevLogIndex - 1].Term)
+			return
+		} else {
+			from := conflict_idx - args.PrevLogIndex - 1
+			ed := len(args.Entries) - 1
+			if ed >= 0 {
+				fmt.Printf("%d access append from %d, append entries from %d to %d\n", rf.me, args.From, args.Entries[from].Index, args.Entries[ed].Index)
 			}
-			e.Index = idx + args.PrevLogIndex + 1
-			e.Term = args.Term
-			if e.Index < rf.raftLog.commited {
-				continue
-			}
-			if e.Index >= index {
-				rf.raftLog.Entries = append(rf.raftLog.Entries, e)
-			} else {
-				rf.raftLog.Entries[e.Index] = e
-			}
-			lastIndex = e.Index
-			m := rf.createApplyMsg(e)
-			if m.CommandValid {
-				rf.raftLog.pk = m.CommandIndex
+			for _, e:= range args.Entries[from:] {
+				//rf.raftLog.Entries = append(rf.raftLog.Entries, e)
+				rf.raftLog.Append(e)
+				m := rf.createApplyMsg(e)
+				if m.CommandValid {
+					rf.raftLog.pk = m.CommandIndex
+				}
 			}
 		}
 		fmt.Printf("%d commit to %d -> min(%d, %d) all msg: %d -> %d, preindex :%d\n", rf.me, rf.raftLog.commited,
@@ -341,7 +348,7 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		if pr.matched < rf.raftLog.GetLastIndex() {
 			rf.appendMore(reply.From)
 		}
-		fmt.Printf("%d access  HeartbeatReply from %d(matched: %d, %d)\n", rf.me, reply.From,
+		fmt.Printf("%d access HeartbeatReply from %d(matched: %d, %d)\n", rf.me, reply.From,
 			pr.matched, rf.raftLog.GetLastIndex())
 		return
 	}
@@ -431,13 +438,20 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 func (rf *Raft) sendAppendEntries(msg *AppendMessage) bool {
 	var reply AppendReply
 	ok := rf.peers[msg.To].Call("Raft.AppendEntries", msg, &reply)
-	if ok {
+	if msg.MsgType == MsgAppend {
+		if ok {
+			rf.msgChan <- reply
+		} else {
+			time.Sleep(time.Duration(10) * time.Millisecond)
+			rf.clients[msg.To].AppendAsync(*msg)
+		}
+	} else if ok {
 		select {
 			case rf.msgChan <- reply : {
 				fmt.Printf("handle append msg from %d to %d\n", msg.From, msg.To)
 			}
 		default:
-			fmt.Printf("handle append msg from %d to %d failed\n", msg.From, msg.To)
+			fmt.Printf("failedn to handle append msg from %d to %d\n", msg.From, msg.To)
 		}
 	}
 	return ok
@@ -527,11 +541,14 @@ func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	if rf.leader != rf.me {
+	if !rf.IsLeader() {
 		return len(rf.raftLog.Entries), rf.term, false
 	}
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
+	fmt.Printf("%d Store a message %d, at term: %d\n",
+		rf.me, command.(int), rf.term)
+
 	rf.mu.Lock()
 	index := rf.raftLog.pk + 1
 	rf.raftLog.pk += 1
@@ -543,7 +560,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Unlock()
 	//accept := rf.sendAppendEntries()
 	for t := 0; t < 20; t ++ {
-		time.Sleep(time.Millisecond * 100)
+		time.Sleep(time.Millisecond * 200)
 		if rf.raftLog.applied >= logIndex {
 			fmt.Printf("%d Store a message of %d in %d,(term: %d, logIndex: %d)\n",
 				rf.me, command.(int), index, rf.term, logIndex)
@@ -597,7 +614,8 @@ func MinInt(a int, b int) int {
 func (rf *Raft) appendMore(idx int) {
 	msg := rf.createMessage(idx, MsgAppend)
 	msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(rf.clients[idx].next)
-	fmt.Printf("%d send again handleAppendReply to %d since %d, which matched %d\n", rf.me, idx, msg.PrevLogIndex, rf.clients[idx].matched)
+	fmt.Printf("%d send again handleAppendReply to %d since %d, which matched %d\n",
+		rf.me, idx, msg.PrevLogIndex, rf.clients[idx].matched)
 	msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
 	rf.clients[msg.To].AppendAsync(msg)
 }
@@ -692,7 +710,7 @@ func (rf *Raft) becomeLeader() {
 			pr.matched = 0
 		}
 	}
-	fmt.Printf("%d become leader\n", rf.me)
+	fmt.Printf("%d become leader at %d\n", rf.me, rf.term)
 	//time.Sleep(10 * time.Millisecond)
 	rf.state = Leader
 	rf.leader = rf.me
@@ -867,38 +885,29 @@ func (rf *Raft) tick_follower() {
 }
 
 func (rf *Raft) step() {
-	sz := len(rf.clients) - 1
-	msgNum := sz
+	//sz := len(rf.clients) - 1
+	//msgNum := sz
 	for atomic.LoadInt32(&rf.stop) != 1{
-		ret := false
+		//ret := false
 		select {
 			case msg := <- rf.voteChan : {
 				if msg.MsgType == MsgStop || rf.stop == 1 {
 					return
 				}
-				rf.handleVoteReply(&msg)
-				msgNum -= 1
-				if msgNum == 0 {
-					msgNum = sz
-					ret = true
+				if rf.state != Candidate && rf.state != PreCandidate && rf.leader != -1 {
+					break
 				}
+				rf.handleVoteReply(&msg)
 			}
 			case msg := <- rf.msgChan : {
 				if msg.MsgType == MsgStop || rf.stop == 1 {
 					return
 				}
 				rf.handleAppendReply(&msg)
-				msgNum -= 1
-				if msgNum == 0 {
-					msgNum = sz
-					ret = true
-				}
+				//ret = true
 			}
 		default:
 			break
-		}
-		if ret && rf.state == Leader {
-			continue
 		}
 		rf.mu.Lock()
 		if rf.state == Leader {
@@ -908,9 +917,7 @@ func (rf *Raft) step() {
 		}
 		rf.mu.Unlock()
 		rf.maybeChange()
-		if !ret && rf.stop == 0 {
-			time.Sleep(time.Duration(40) * time.Millisecond)
-		}
+		time.Sleep(time.Duration(40) * time.Millisecond)
 		//fmt.Printf("Sleep \n");
 	}
 	fmt.Printf("Stop Raft: %d\n", rf.me)
@@ -937,12 +944,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.rdElectionTimeout = int32(rand.Intn(10) * 50)
 	//rf.rdElectionTimeout = 1000
 	time.Sleep(time.Duration(rf.rdElectionTimeout) * time.Millisecond)
-	rf.electionTimeout = 900
-	rf.rdElectionTimeout = int32(900 + rand.Intn(6) * 80)
+	rf.electionTimeout = 1000
+	rf.rdElectionTimeout = int32(1000 + rand.Intn(6) * 80)
 	for  {
 		if _, ok := electionTimes[rf.rdElectionTimeout]; ok {
 			//rf.rdElectionTimeout += 100
-			rf.rdElectionTimeout = int32(900 + rand.Intn(7) * 60)
+			rf.rdElectionTimeout = int32(1000 + rand.Intn(7) * 60)
 		} else {
 			break
 		}
