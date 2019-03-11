@@ -93,6 +93,7 @@ type Raft struct {
 	raftLog	  UnstableLog
 	votes	  []int
 	stop 		int32
+	failCount   int32
 }
 
 // return currentTerm and whether this server
@@ -338,7 +339,7 @@ func getResponseType(msg MessageType) MessageType {
 func (rf *Raft) handleAppendReply(reply* AppendReply) {
 	start := time.Now()
 	defer calcRuntime(start, "handleAppendReply")
-	fmt.Printf("%d handleAppendReply from %d at\n", rf.me, reply.From)
+	fmt.Printf("%d handleAppendReply from %d at %v\n", rf.me, reply.From, start)
 	if !rf.checkAppend(reply.From, reply.Term, reply.MsgType) {
 		return
 	}
@@ -441,25 +442,16 @@ func (rf *Raft) sendAppendEntries(msg *AppendMessage) bool {
 	var reply AppendReply
 	ok := rf.peers[msg.To].Call("Raft.AppendEntries", msg, &reply)
 	if !ok {
-		fmt.Printf("failed to  append msg from %d to %d, try again\n", msg.From, msg.To)
+		fmt.Printf("failed to %s msg from %d to %d, try again\n", getMsgName(msg.MsgType), msg.From, msg.To)
 		ok = rf.peers[msg.To].Call("Raft.AppendEntries", msg, &reply)
 	}
 	if ok {
 		fmt.Printf("send append msg success from %d to %d\n", msg.From, msg.To)
 		rf.msgChan <- reply
 	} else {
-		rf.clients[msg.To].AppendAsync(*msg)
+		fmt.Printf("failed to %s msg from %d to %d\n", getMsgName(msg.MsgType), msg.From, msg.To)
+		atomic.AddInt32(&rf.failCount, 1)
 	}
-	//if msg.MsgType == MsgAppend {
-	//} else {
-	//	select {
-	//		case rf.msgChan <- reply : {
-	//			fmt.Printf("handle append msg from %d to %d\n", msg.From, msg.To)
-	//		}
-	//	default:
-	//		fmt.Printf("failedn to handle append msg from %d to %d\n", msg.From, msg.To)
-	//	}
-	//}
 	return ok
 }
 
@@ -630,7 +622,6 @@ func (rf *Raft) appendMore(idx int) {
 func (rf *Raft) checkAppend(from int, term int, msgType MessageType) bool {
 	if term > rf.term {
 		rf.becomeFollower(term, from)
-		//return false
 	} else if term < rf.term {
 		fmt.Printf("==================!ERROR!======append message(%s) from %d(%d) to %d(%d) can not be reach, leader: %d\n",
 			getMsgName(msgType), from, term, rf.me, rf.term, rf.leader)
@@ -641,13 +632,14 @@ func (rf *Raft) checkAppend(from int, term int, msgType MessageType) bool {
 
 func (rf *Raft) checkVote(from int, term int, msgType MessageType, accept* bool) bool {
 	if term > rf.term {
+		t := time.Now()
 		if msgType == MsgRequestVote || msgType == MsgRequestPrevote{
-			if rf.passed_election_time(rf.electionTimeout, time.Now()) && rf.leader != -1 {
-				//fmt.Printf("%d(%d) reject a msg (%s) from %d, term:%d. leader %d\n",
-				//	rf.me, rf.term, getMsgName(msgType), from, term, rf.leader)
+			if !rf.passed_election_time(rf.electionTimeout, t) && rf.leader != -1 {
 				*accept = false
 				return false
 			}
+			fmt.Printf("%d(%d, leader: %d) access a msg (%s) from %d, term:%d. when %v, since last heartbeat: %v\n",
+				rf.me, rf.leader, rf.term, getMsgName(msgType), from, term, t, rf.lastElection)
 		}
 		//fmt.Printf("%d(%d) receive a larger term(%d) from %d of %s, current leader: %d\n",
 		//	rf.me, rf.term, term, from, getMsgName(msgType), rf.leader)
@@ -683,7 +675,7 @@ func (rf *Raft) Kill() {
 	}
 	time.Sleep(100 * time.Millisecond)
 	delete(electionTimes, rf.rdElectionTimeout)
-	fmt.Printf("Kill Raft %d\n", rf.me)
+	fmt.Printf("Kill Raft %d, fail rpc: %d\n", rf.me, rf.failCount)
 }
 
 //
@@ -836,7 +828,7 @@ func (rf *Raft) maybeLose() {
 
 func (rf *Raft) maybeChange() {
 	state := HardState{rf.term, rf.vote, rf.raftLog.commited}
-	if state != rf.prevState {
+	if state != rf.prevState{
 		rf.persist()
 		rf.prevState = state
 	}
@@ -898,7 +890,7 @@ func (rf *Raft) doCallback() bool {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	for i := 0; i < sz; i ++ {
+	for ; sz > 0; sz -- {
 		select {
 		case msg := <- rf.voteChan : {
 			if msg.MsgType == MsgStop || rf.stop == 1 {
@@ -923,7 +915,8 @@ func (rf *Raft) doCallback() bool {
 			break
 		}
 	}
-	rf.maybeChange()
+	defer rf.maybeChange()
+	fmt.Printf("%d deal %d message\n", rf.me, 20 - sz);
 	return true
 }
 
