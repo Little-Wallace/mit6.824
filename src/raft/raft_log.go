@@ -6,6 +6,7 @@ type Entry struct {
 	Data []byte
 	Term int
 	Index int
+	DataIndex int
 }
 
 type UnstableLog struct {
@@ -13,6 +14,10 @@ type UnstableLog struct {
 	commited	int
 	applied		int
 	pk			int
+}
+
+func (log *UnstableLog) GetDataIndex() int {
+	return log.Entries[len(log.Entries) - 1].DataIndex
 }
 
 func (log *UnstableLog) GetLastIndex() int {

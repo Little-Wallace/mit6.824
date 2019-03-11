@@ -26,7 +26,6 @@ import (
 	"labgob"
 	"sync/atomic"
 	"sort"
-	"math/rand"
 )
 // import "bytes"
 // import "labgob"
@@ -158,15 +157,15 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.raftLog.commited)
 	d.Decode(&rf.raftLog.Entries)
 	rf.raftLog.applied = 0
-	for idx, e := range rf.raftLog.Entries {
-		if idx > rf.raftLog.commited {
-			break
-		}
-		m := rf.createApplyMsg(e)
-		if m.CommandValid {
-			rf.raftLog.pk = m.CommandIndex
-		}
-	}
+	//for idx, e := range rf.raftLog.Entries {
+	//	if idx > rf.raftLog.commited {
+	//		break
+	//	}
+	//	m := rf.createApplyMsg(e)
+	//	if m.CommandValid {
+	//		rf.raftLog.pk = m.CommandIndex + 1
+	//	}
+	//}
 	fmt.Printf("%d recover from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
 }
 
@@ -260,7 +259,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 			m := rf.createApplyMsg(e)
 			if m.CommandValid {
 				fmt.Printf("%d apply an entry of log[%d]=data[%d]=%d\n", rf.me, e.Index, m.CommandIndex, m.Command.(int))
-				rf.applySM <- rf.createApplyMsg(e)
+				rf.applySM <- m
 			}
 		}
 		rf.raftLog.applied = rf.raftLog.commited
@@ -272,7 +271,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 func (rf *Raft) handleHeartbeat(msg *AppendMessage, reply *AppendReply)  {
 	reply.Success = true
 	reply.Term = MaxInt(rf.term, reply.Term)
-	reply.Commited = len(rf.raftLog.Entries)
+	reply.Commited = len(rf.raftLog.Entries) - 1
 	reply.MsgType = MsgHeartbeatReply
 	rf.term = msg.Term
 	if rf.raftLog.MaybeCommit(msg.Commited) {
@@ -309,10 +308,6 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 			for _, e:= range args.Entries[from:] {
 				//rf.raftLog.Entries = append(rf.raftLog.Entries, e)
 				rf.raftLog.Append(e)
-				m := rf.createApplyMsg(e)
-				if m.CommandValid {
-					rf.raftLog.pk = m.CommandIndex
-				}
 			}
 		}
 		fmt.Printf("%d commit to %d -> min(%d, %d) all msg: %d -> %d, preindex :%d\n", rf.me, rf.raftLog.commited,
@@ -445,22 +440,26 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 func (rf *Raft) sendAppendEntries(msg *AppendMessage) bool {
 	var reply AppendReply
 	ok := rf.peers[msg.To].Call("Raft.AppendEntries", msg, &reply)
-	if msg.MsgType == MsgAppend {
-		if ok {
-			rf.msgChan <- reply
-		} else {
-			time.Sleep(time.Duration(10) * time.Millisecond)
-			rf.clients[msg.To].AppendAsync(*msg)
-		}
-	} else if ok {
-		select {
-			case rf.msgChan <- reply : {
-				fmt.Printf("handle append msg from %d to %d\n", msg.From, msg.To)
-			}
-		default:
-			fmt.Printf("failedn to handle append msg from %d to %d\n", msg.From, msg.To)
-		}
+	if !ok {
+		fmt.Printf("failed to  append msg from %d to %d, try again\n", msg.From, msg.To)
+		ok = rf.peers[msg.To].Call("Raft.AppendEntries", msg, &reply)
 	}
+	if ok {
+		fmt.Printf("send append msg success from %d to %d\n", msg.From, msg.To)
+		rf.msgChan <- reply
+	} else {
+		rf.clients[msg.To].AppendAsync(*msg)
+	}
+	//if msg.MsgType == MsgAppend {
+	//} else {
+	//	select {
+	//		case rf.msgChan <- reply : {
+	//			fmt.Printf("handle append msg from %d to %d\n", msg.From, msg.To)
+	//		}
+	//	default:
+	//		fmt.Printf("failedn to handle append msg from %d to %d\n", msg.From, msg.To)
+	//	}
+	//}
 	return ok
 }
 
@@ -474,14 +473,14 @@ func (rf *Raft) sendRequestVote(args* RequestVoteArgs) bool {
 	fmt.Printf("begin send request vote from %d to %d \n", args.From, args.To)
 	ok := rf.peers[args.To].Call("Raft.RequestVote", args, &reply)
 	reply.To = args.To
-	if ok {
-		if rf.leader != -1 && (rf.state == Follower || rf.state == Leader) {
-			fmt.Printf("skip request vote from %d to %d \n", args.From, args.To)
-			return ok
-		}
-		rf.voteChan <- reply
-		fmt.Printf("send request vote from %d to %d \n", args.From, args.To)
+	if !ok && args.MsgType == MsgRequestVote {
+		ok = rf.peers[args.To].Call("Raft.RequestVote", args, &reply)
+		fmt.Printf("failed to vote from %d to %d, try again\n", args.From, args.To)
 	}
+	if ok {
+		rf.voteChan <- reply
+	}
+
 	return ok
 }
 
@@ -525,7 +524,7 @@ func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
 			} else {
 				fmt.Printf("%d win vote\n", rf.me)
 				rf.becomeLeader()
-				rf.propose([]byte{})
+				rf.propose([]byte{}, rf.raftLog.GetDataIndex())
 			}
 		} else if reject == quorum {
 			fmt.Printf("%d has been reject by %d members\n", rf.me, reject)
@@ -555,16 +554,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	fmt.Printf("%d Store a message %d, at term: %d\n",
-		rf.me, command.(int), rf.term)
 
 	rf.mu.Lock()
-	index := rf.raftLog.pk + 1
-	rf.raftLog.pk += 1
-	e.Encode(index)
+	index := rf.raftLog.GetDataIndex() + 1
+	fmt.Printf("%d Store a message %d, at index: %d, term: %d\n",
+		rf.me, command.(int), index, rf.term)
 	e.Encode(command)
 	data := w.Bytes()
-	rf.propose(data)
+	rf.propose(data, index)
 	logIndex := rf.raftLog.GetLastIndex()
 	rf.mu.Unlock()
 	//accept := rf.sendAppendEntries()
@@ -574,23 +571,23 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			fmt.Printf("%d Store a message of %d in %d,(term: %d, logIndex: %d)\n",
 				rf.me, command.(int), index, rf.term, logIndex)
 			return index, rf.term, true
+		} else if !rf.IsLeader() {
+			break
 		}
 	}
 	fmt.Printf("%d Store a message of %d timeout in CommandIndex %d, logIndex: %d\n",
 		rf.me, command.(int), index, logIndex)
-	return index, rf.term, true
+	return index, rf.term, false
 }
 
 func (rf *Raft) createApplyMsg(e Entry) ApplyMsg {
 	var applyMsg ApplyMsg
-	var index int
 	var tmp int
 	if len(e.Data) > 0 {
 		r := bytes.NewBuffer(e.Data)
 		d := labgob.NewDecoder(r)
-		d.Decode(&index)
 		d.Decode(&tmp)
-		applyMsg.CommandIndex = index
+		applyMsg.CommandIndex = e.DataIndex
 		applyMsg.Command = tmp
 		applyMsg.CommandValid = true
 		//fmt.Printf("%d Apply entre : term: %d, index: %d, value : %d\n", rf.me, e.Term, applyMsg.CommandIndex, tmp)
@@ -780,10 +777,10 @@ func (p SortByFirst) Less(i, j int) bool {
 	return p.Pairs[i].value > p.Pairs[j].value
 }
 
-func (rf *Raft) propose(data []byte) {
+func (rf *Raft) propose(data []byte, idx int) {
 	logNum := len(rf.raftLog.Entries)
 	rf.raftLog.Entries = append(rf.raftLog.Entries,
-		Entry{data, rf.term, logNum})
+		Entry{data, rf.term, logNum, idx})
 	rf.broadcast()
 }
 
@@ -795,9 +792,9 @@ func (rf *Raft) broadcast() {
 		if id != int(rf.me) {
 			msg.To = id
 			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(pr.next)
-			if len(msg.Entries) == 0 {
-				continue
-			}
+			//if len(msg.Entries) == 0 {
+			//	continue
+			//}
 			//msg.Commited = MinInt(rf.raftLog.commited, pr.matched)
 			msg.Commited = rf.raftLog.commited
 			fmt.Printf("%d: broadcast append to %d since %d\n", rf.me, id, pr.next)
@@ -846,7 +843,7 @@ func (rf *Raft) maybeChange() {
 }
 
 func (rf *Raft) campaign(msgType MessageType) {
-	fmt.Printf("%d begin %s campagin at term:%d, state:%d\n", rf.me, getMsgName(msgType), rf.term, rf.state)
+	fmt.Printf("%d begin %s campagin at term:%d, state:%d, log len:%d\n", rf.me, getMsgName(msgType), rf.term, rf.state, len(rf.raftLog.Entries))
 	term := rf.becomeCandidate(msgType)
 	rf.votes[rf.me] = 1
 	lastLogIndex := rf.raftLog.GetLastIndex()
@@ -878,7 +875,7 @@ func (rf *Raft) tick_leader() {
 		rf.lastElection = now
 		rf.maybeLose()
 		return
-	} else if rf.lastHeartBeat.Add(time.Duration(300) * time.Millisecond).Before(now) {
+	} else if rf.lastHeartBeat.Add(time.Duration(200) * time.Millisecond).Before(now) {
 		rf.lastHeartBeat = now
 		msg := rf.createMessage(0, MsgHeartbeat)
 		// unlock in broad heartbeat
@@ -947,7 +944,6 @@ func (rf *Raft) step() {
 		rf.mu.Unlock()
 		rf.maybeChange()
 		time.Sleep(time.Duration(40) * time.Millisecond)
-		//fmt.Printf("Sleep \n");
 	}
 	fmt.Printf("Stop Raft: %d\n", rf.me)
 }
@@ -962,7 +958,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	e := Entry{[]byte{}, 0, 0}
+	e := Entry{[]byte{}, 0, 0, 0}
 	rf.raftLog = UnstableLog{
 		[]Entry{e},
 		0, 0, 0,
@@ -970,19 +966,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.prevState = HardState{0, -1, 0}
 	rf.term = 0
 	rf.vote = -1
-	rf.rdElectionTimeout = int32(rand.Intn(10) * 50)
-	//rf.rdElectionTimeout = 1000
-	time.Sleep(time.Duration(rf.rdElectionTimeout) * time.Millisecond)
 	rf.electionTimeout = 800
-	rf.rdElectionTimeout = int32(800 + rand.Intn(5) * 40)
-	for  {
-		if _, ok := electionTimes[rf.rdElectionTimeout]; ok {
-			//rf.rdElectionTimeout += 100
-			rf.rdElectionTimeout = int32(800 + rand.Intn(5) * 40)
-		} else {
-			break
-		}
-	}
+	rf.rdElectionTimeout = 800 + 40 * int32(me)
 	electionTimes[rf.rdElectionTimeout] = true
 	rf.lastHeartBeat = time.Now()
 	rf.lastElection = time.Now()

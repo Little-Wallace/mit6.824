@@ -3,6 +3,7 @@ package raft
 import (
 	"labrpc"
 	"fmt"
+	"sync/atomic"
 )
 
 type RaftClient struct {
@@ -12,7 +13,7 @@ type RaftClient struct {
 	voteChan chan RequestVoteArgs
 	next 	int
 	matched int
-	pending int
+	pending int32
 	active	bool
 	stop	bool
 	raft  	*Raft
@@ -35,13 +36,13 @@ func (cl *RaftClient) Start() {
 				if (msg.Term != cl.raft.term && msg.MsgType == MsgHeartbeat) || cl.raft.leader != cl.raft.me {
 					fmt.Printf("skip append msg from %d to %d which term(%d) is less than raft %d\n",
 						msg.From, msg.To, msg.Term, cl.raft.term)
-					cl.pending -= 1
+					atomic.AddInt32(&cl.pending, -1)
 					break
 				}
 				msg.Id = idx
 				idx += 1
 				cl.raft.sendAppendEntries(&msg)
-				cl.pending -= 1
+				atomic.AddInt32(&cl.pending, -1)
 			}
 			case msg := <- cl.voteChan : {
 				if msg.MsgType == MsgStop || cl.stop {
@@ -72,17 +73,19 @@ func (cl *RaftClient) Stop() {
 
 func (cl *RaftClient) AppendAsync(msg AppendMessage) {
 	if msg.MsgType == MsgAppend {
-		cl.pending += 1
 		cl.msgChan <- msg
+		atomic.AddInt32(&cl.pending, 1)
 	} else if cl.pending < 3 {
 		select {
 		case cl.msgChan <- msg : {
-			cl.pending += 1
+			atomic.AddInt32(&cl.pending, 1)
 		}
 		default:
 			fmt.Printf("bcast heartbeat failed. there is too much append message\n")
 			return
 		}
+	} else {
+		fmt.Printf("skip bcast heartbeat. there is too much append message\n")
 	}
 }
 
