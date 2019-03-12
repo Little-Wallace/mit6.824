@@ -297,8 +297,6 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 		conflict_idx := rf.raftLog.FindConflict(args.Entries)
 		if conflict_idx == 0 {
 		} else if conflict_idx <= rf.raftLog.commited {
-			fmt.Printf("=============panic ERROR===%d, conflict log[%d]=%d, leader[%d]=%d\n", rf.me, conflict_idx,
-				rf.raftLog.Entries[conflict_idx].Term, conflict_idx, args.Entries[conflict_idx - args.PrevLogIndex - 1].Term)
 			return
 		} else {
 			from := conflict_idx - args.PrevLogIndex - 1
@@ -321,6 +319,9 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 		reply.Success = false
 		reply.Term = rf.term
 		reply.Commited = args.PrevLogIndex - 1
+		if len(rf.raftLog.Entries) > 2 * rf.raftLog.commited {
+			reply.Commited = rf.raftLog.commited
+		}
 		e := rf.raftLog.Entries[args.PrevLogIndex]
 		fmt.Printf("%d(index: %d, term: %d) %d reject append entries from %d(prev index: %d, term: %d)\n",
 			rf.me, e.Index, e.Term, rf.raftLog.commited, args.From, args.PrevLogIndex, args.PrevLogTerm)
@@ -438,43 +439,6 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 // the struct itself.
 //
 
-func (rf *Raft) sendAppendEntries(msg *AppendMessage) bool {
-	var reply AppendReply
-	ok := rf.peers[msg.To].Call("Raft.AppendEntries", msg, &reply)
-	if !ok {
-		fmt.Printf("failed to %s msg from %d to %d, try again\n", getMsgName(msg.MsgType), msg.From, msg.To)
-		ok = rf.peers[msg.To].Call("Raft.AppendEntries", msg, &reply)
-	}
-	if ok {
-		fmt.Printf("send append msg success from %d to %d\n", msg.From, msg.To)
-		rf.msgChan <- reply
-	} else {
-		fmt.Printf("failed to %s msg from %d to %d\n", getMsgName(msg.MsgType), msg.From, msg.To)
-		atomic.AddInt32(&rf.failCount, 1)
-	}
-	return ok
-}
-
-func (rf *Raft) sendRequestVote(args* RequestVoteArgs) bool {
-	var reply RequestVoteReply
-	if args.MsgType == MsgRequestPrevote {
-		reply.MsgType = MsgRequestPrevoteReply
-	} else {
-		reply.MsgType = MsgRequestVoteReply
-	}
-	fmt.Printf("begin send request vote from %d to %d \n", args.From, args.To)
-	ok := rf.peers[args.To].Call("Raft.RequestVote", args, &reply)
-	reply.To = args.To
-	if !ok && args.MsgType == MsgRequestVote {
-		ok = rf.peers[args.To].Call("Raft.RequestVote", args, &reply)
-		fmt.Printf("failed to vote from %d to %d, try again\n", args.From, args.To)
-	}
-	if ok {
-		rf.voteChan <- reply
-	}
-
-	return ok
-}
 
 func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
 	fmt.Printf("%d(%d): receive vote reply from %d(%d), state: %d\n",
@@ -554,22 +518,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	e.Encode(command)
 	data := w.Bytes()
 	rf.propose(data, index)
-	logIndex := rf.raftLog.GetLastIndex()
+	//logIndex := rf.raftLog.GetLastIndex()
 	rf.mu.Unlock()
 	//accept := rf.sendAppendEntries()
-	for t := 0; t < 20; t ++ {
-		time.Sleep(time.Millisecond * 200)
-		if rf.raftLog.applied >= logIndex {
-			fmt.Printf("%d Store a message of %d in %d,(term: %d, logIndex: %d)\n",
-				rf.me, command.(int), index, rf.term, logIndex)
-			return index, rf.term, true
-		} else if !rf.IsLeader() {
-			break
-		}
-	}
-	fmt.Printf("%d Store a message of %d timeout in CommandIndex %d, logIndex: %d\n",
-		rf.me, command.(int), index, logIndex)
-	return index, rf.term, false
+	return index, rf.term, true
 }
 
 func (rf *Raft) createApplyMsg(e Entry) ApplyMsg {
@@ -916,13 +868,10 @@ func (rf *Raft) doCallback() bool {
 		}
 	}
 	defer rf.maybeChange()
-	fmt.Printf("%d deal %d message\n", rf.me, 20 - sz);
 	return true
 }
 
 func (rf *Raft) step() {
-	//sz := len(rf.clients) - 1
-	//msgNum := sz
 	for atomic.LoadInt32(&rf.stop) != 1{
 		//ret := false
 		if !rf.doCallback() {

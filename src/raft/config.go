@@ -473,15 +473,15 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 		}
 	}
 	fmt.Printf("Fail to get cmd %d\n", cmd)
-	for i := 0; i < cfg.n; i ++ {
-		l := &cfg.rafts[i].raftLog
-		fmt.Printf("==========log size: %d, commit: %d, applied : %d\n", len(l.Entries), l.commited, l.applied)
-		//fmt.Printf("==========leader: %d, last index: %d, last term: %d\n", cfg.rafts[i].leader, l.GetLastIndex(), l.GetLastTerm())
-		for j := 0; j < len(l.Entries); j ++ {
-			fmt.Printf("(%d,%d),", l.Entries[j].Index, l.Entries[j].Term)
-		}
-		fmt.Printf(",leader: %d\n", cfg.rafts[i].leader)
-	}
+	//for i := 0; i < cfg.n; i ++ {
+	//	l := &cfg.rafts[i].raftLog
+	//	fmt.Printf("==========log size: %d, commit: %d, applied : %d\n", len(l.Entries), l.commited, l.applied)
+	//	//fmt.Printf("==========leader: %d, last index: %d, last term: %d\n", cfg.rafts[i].leader, l.GetLastIndex(), l.GetLastTerm())
+	//	for j := 0; j < len(l.Entries); j ++ {
+	//		fmt.Printf("(%d,%d),", l.Entries[j].Index, l.Entries[j].Term)
+	//	}
+	//	fmt.Printf(",leader: %d\n", cfg.rafts[i].leader)
+	//}
 
 	cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 	return -1

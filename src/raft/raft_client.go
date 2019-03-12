@@ -2,8 +2,8 @@ package raft
 
 import (
 	"labrpc"
+	"time"
 	"fmt"
-	"sync/atomic"
 )
 
 type RaftClient struct {
@@ -21,81 +21,49 @@ type RaftClient struct {
 
 
 func (cl *RaftClient) Start() {
-	cl.msgChan = make(chan AppendMessage, 400)
-	cl.voteChan = make(chan RequestVoteArgs, 600)
-	cl.stop = false
-	go func() {
-		idx := 0
-		for !cl.stop{
-			select {
-			case msg := <- cl.msgChan : {
-				if msg.MsgType == MsgStop || cl.stop {
-					fmt.Printf("Stop client\n")
-					return
-				}
-				if (msg.Term != cl.raft.term && msg.MsgType == MsgHeartbeat) || cl.raft.leader != cl.raft.me {
-					fmt.Printf("skip append msg from %d to %d which term(%d) is less than raft %d\n",
-						msg.From, msg.To, msg.Term, cl.raft.term)
-					atomic.AddInt32(&cl.pending, -1)
-					break
-				}
-				msg.Id = idx
-				idx += 1
-				cl.raft.sendAppendEntries(&msg)
-				atomic.AddInt32(&cl.pending, -1)
-			}
-			case msg := <- cl.voteChan : {
-				if msg.MsgType == MsgStop || cl.stop {
-					fmt.Printf("Stop client\n")
-					return
-				}
-				if !cl.raft.IsCandidate() {
-					fmt.Printf("skip vote msg from %d to %d which term(%d) is less than raft %d\n", msg.From, msg.To, msg.Term, cl.raft.term)
-					break
-				}
-				cl.raft.sendRequestVote(&msg)
-			}
-			}
-		}
-		fmt.Printf("Stop client\n")
-	}()
 }
 
 func (cl *RaftClient) Stop() {
-	var msg AppendMessage
-	msg.MsgType = MsgStop
-	var v RequestVoteArgs
-	v.MsgType = MsgStop
-	cl.msgChan <- msg
-	cl.voteChan <- v
-	cl.stop = true
+}
+
+func (cl *RaftClient) sendAppendEntries(msg AppendMessage) bool {
+	start := time.Now()
+	var reply AppendReply
+	ok := cl.peer.Call("Raft.AppendEntries", &msg, &reply)
+	if !ok && msg.MsgType == MsgAppend {
+		ok = cl.peer.Call("Raft.AppendEntries", &msg, &reply)
+	}
+	calcRuntime(start, "sendAppendEntries")
+	if ok {
+		fmt.Printf("send append msg success from %d to %d\n", msg.From, msg.To)
+		cl.raft.msgChan <- reply
+	}
+	return ok
+}
+
+func (cl *RaftClient) sendRequestVote(args RequestVoteArgs) bool {
+	start := time.Now()
+	var reply RequestVoteReply
+	if args.MsgType == MsgRequestPrevote {
+		reply.MsgType = MsgRequestPrevoteReply
+	} else {
+		reply.MsgType = MsgRequestVoteReply
+	}
+	fmt.Printf("begin send request vote from %d to %d \n", args.From, args.To)
+	ok := cl.peer.Call("Raft.RequestVote", &args, &reply)
+	calcRuntime(start, "sendRequestVote")
+	reply.To = args.To
+	if ok {
+		cl.raft.voteChan <- reply
+	}
+	return ok
 }
 
 func (cl *RaftClient) AppendAsync(msg AppendMessage) {
-	if msg.MsgType == MsgAppend {
-		cl.msgChan <- msg
-		atomic.AddInt32(&cl.pending, 1)
-	} else if cl.pending < 3 {
-		select {
-		case cl.msgChan <- msg : {
-			atomic.AddInt32(&cl.pending, 1)
-		}
-		default:
-			fmt.Printf("bcast heartbeat failed. there is too much append message\n")
-			return
-		}
-	} else {
-		fmt.Printf("skip bcast heartbeat. there is too much append message\n")
-	}
+	go cl.sendAppendEntries(msg)
 }
 
 func (cl *RaftClient) VoteAsync(msg RequestVoteArgs) {
-	select {
-		case cl.voteChan <- msg : {
-		}
-	default:
-		fmt.Printf("Vote failed. there is too much vote message\n")
-		return
-	}
+	go cl.sendRequestVote(msg)
 }
 

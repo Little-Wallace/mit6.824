@@ -17,6 +17,7 @@ type UnstableLog struct {
 }
 
 func (log *UnstableLog) GetDataIndex() int {
+	//return log.Entries[log.commited].DataIndex
 	return log.Entries[len(log.Entries) - 1].DataIndex
 }
 
