@@ -13,12 +13,19 @@ type RaftClient struct {
 	voteChan chan RequestVoteArgs
 	next 	int
 	matched int
-	pending int32
+	lastAppendTime time.Time
 	active	bool
 	stop	bool
 	raft  	*Raft
 }
 
+func (cl *RaftClient) PassAppendTimeout() bool {
+	t := time.Now()
+	if t.Sub(cl.lastAppendTime).Seconds() < 1.0 {
+		return true
+	}
+	return false
+}
 
 func (cl *RaftClient) Start() {
 }
@@ -30,10 +37,11 @@ func (cl *RaftClient) sendAppendEntries(msg AppendMessage) bool {
 	start := time.Now()
 	var reply AppendReply
 	ok := cl.peer.Call("Raft.AppendEntries", &msg, &reply)
-	if !ok && msg.MsgType == MsgAppend {
+	ed := time.Now()
+	if !ok && ed.Sub(start).Seconds() < 0.2 {
 		ok = cl.peer.Call("Raft.AppendEntries", &msg, &reply)
 	}
-	calcRuntime(start, "sendAppendEntries")
+	//calcRuntime(start, "sendAppendEntries")
 	if ok {
 		fmt.Printf("send append msg success from %d to %d\n", msg.From, msg.To)
 		cl.raft.msgChan <- reply

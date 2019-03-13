@@ -255,7 +255,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 		fmt.Printf("%d(%d) access append from %d(%d) to %d\n", rf.me, rf.raftLog.commited,
 			args.From, args.Commited, args.To)
 	}
-	if rf.raftLog.applied < rf.raftLog.commited && rf.raftLog.commited < len(rf.raftLog.Entries) {
+	if rf.raftLog.applied < rf.raftLog.commited {
 		for _, e := range rf.raftLog.Entries[rf.raftLog.applied+1 : rf.raftLog.commited+1] {
 			m := rf.createApplyMsg(e)
 			if m.CommandValid {
@@ -288,7 +288,8 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 		fmt.Printf("%d : %d(index: %d, %d) reject append entries from %d(prev index: %d)\n",
 			args.Id, rf.me, index - 1, rf.term, args.From, args.PrevLogIndex)
 		reply.Success = false
-		reply.Commited = index - 1
+		//reply.Commited = index - 1
+		reply.Commited = rf.raftLog.commited
 		reply.Term = rf.term
 		return
 	}
@@ -297,6 +298,8 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 		conflict_idx := rf.raftLog.FindConflict(args.Entries)
 		if conflict_idx == 0 {
 		} else if conflict_idx <= rf.raftLog.commited {
+			fmt.Printf("%d : %d(index: %d, %d) conflict append entries from %d(prev index: %d)\n",
+				args.Id, rf.me, index - 1, rf.term, args.From, args.PrevLogIndex)
 			return
 		} else {
 			from := conflict_idx - args.PrevLogIndex - 1
@@ -319,7 +322,7 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 		reply.Success = false
 		reply.Term = rf.term
 		reply.Commited = args.PrevLogIndex - 1
-		if len(rf.raftLog.Entries) > 2 * rf.raftLog.commited {
+		if len(rf.raftLog.Entries) > 2 + rf.raftLog.commited {
 			reply.Commited = rf.raftLog.commited
 		}
 		e := rf.raftLog.Entries[args.PrevLogIndex]
@@ -350,7 +353,7 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 	pr := &rf.clients[reply.From]
 	pr.active = true
 	if reply.MsgType == MsgHeartbeatReply {
-		if pr.matched < rf.raftLog.GetLastIndex() {
+		if pr.matched < rf.raftLog.GetLastIndex() && pr.PassAppendTimeout() {
 			rf.appendMore(reply.From)
 		}
 		fmt.Printf("%d access HeartbeatReply from %d(matched: %d, %d)\n", rf.me, reply.From,
@@ -358,10 +361,9 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		return
 	}
 	if !reply.Success {
-		fmt.Printf("%d(%d) handleAppendReply failed, from %d(%d). send again since %d\n",
-			rf.me, rf.raftLog.commited, reply.From, reply.Commited, reply.Commited + 1)
-		//pr.matched --
-		if reply.Commited >= pr.matched {
+		fmt.Printf("%d(%d) handleAppendReply failed, from %d(%d). which matched %d\n",
+			rf.me, rf.raftLog.commited, reply.From, reply.Commited, pr.matched)
+		if reply.Commited + 1 < pr.next {
 			pr.next = reply.Commited + 1
 			rf.appendMore(reply.From)
 		}
@@ -569,6 +571,7 @@ func (rf *Raft) appendMore(idx int) {
 	msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
 	msg.Commited = rf.raftLog.commited
 	rf.clients[msg.To].AppendAsync(msg)
+	rf.clients[msg.To].lastAppendTime = time.Now()
 }
 
 func (rf *Raft) checkAppend(from int, term int, msgType MessageType) bool {
@@ -625,9 +628,11 @@ func (rf *Raft) Kill() {
 			rf.clients[idx].Stop()
 		}
 	}
-	time.Sleep(100 * time.Millisecond)
-	delete(electionTimes, rf.rdElectionTimeout)
 	fmt.Printf("Kill Raft %d, fail rpc: %d\n", rf.me, rf.failCount)
+	for atomic.LoadInt32(&rf.stop) != 2 {
+		time.Sleep(100 * time.Millisecond)
+	}
+	delete(electionTimes, rf.rdElectionTimeout)
 }
 
 //
@@ -734,6 +739,7 @@ func (rf *Raft) broadcast() {
 	msg := rf.createMessage(0, MsgAppend)
 	for id, pr := range rf.clients {
 		if id != int(rf.me) {
+			rf.clients[id].lastAppendTime = time.Now()
 			msg.To = id
 			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(pr.next)
 			//if len(msg.Entries) == 0 {
@@ -842,7 +848,7 @@ func (rf *Raft) doCallback() bool {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	for ; sz > 0; sz -- {
+	for ; sz > 0 && atomic.LoadInt32(&rf.stop) == 0; sz -- {
 		select {
 		case msg := <- rf.voteChan : {
 			if msg.MsgType == MsgStop || rf.stop == 1 {
@@ -872,7 +878,7 @@ func (rf *Raft) doCallback() bool {
 }
 
 func (rf *Raft) step() {
-	for atomic.LoadInt32(&rf.stop) != 1{
+	for atomic.LoadInt32(&rf.stop) == 0{
 		//ret := false
 		if !rf.doCallback() {
 			return
@@ -888,6 +894,7 @@ func (rf *Raft) step() {
 		time.Sleep(time.Duration(40) * time.Millisecond)
 	}
 	fmt.Printf("Stop Raft: %d\n", rf.me)
+	atomic.StoreInt32(&rf.stop, 2)
 }
 
 var electionTimes = make(map[int32]bool)

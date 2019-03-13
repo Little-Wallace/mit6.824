@@ -64,7 +64,7 @@ func (log *UnstableLog) GetUnApplyEntry() []Entry {
 
 
 func (log *UnstableLog) MaybeCommit(index int) bool {
-	if index > log.commited {
+	if index > log.commited && index < len(log.Entries){
 		log.commited = index
 		return true
 	}
