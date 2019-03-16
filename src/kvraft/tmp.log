@@ -1,0 +1,25 @@
+0 : start a Raft instance
+0 become follower of -1 in term: 0
+0 : random election timeout: 800
+1 : start a Raft instance
+1 become follower of -1 in term: 0
+1 : random election timeout: 840
+2 : start a Raft instance
+2 become follower of -1 in term: 0
+2 : random election timeout: 880
+3 : start a Raft instance
+3 become follower of -1 in term: 0
+3 : random election timeout: 920
+4 : start a Raft instance
+4 become follower of -1 in term: 0
+4 : random election timeout: 960
+Test: one client (3A) ...
+Receive a Put operation, key: 0, value: , Idx: 3696656554097067813
+Receive a Append operation, key: 0, value: x 0 0 y, Idx: 3696656554097067814
+Receive a Get operation, key: 0, idx: 3696656554097067815
+2019/03/16 14:12:10 get wrong value, key 0, wanted:
+x 0 0 y
+, got
+
+exit status 1
+FAIL	kvraft	0.008s
