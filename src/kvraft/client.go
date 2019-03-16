@@ -13,7 +13,8 @@ import (
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
-	idx     int64
+	idx     uint64
+	name    int64
 	leader  int
 	addrs   []int
 	mu      sync.Mutex
@@ -30,7 +31,7 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	ck.idx = nrand()
+	ck.idx = uint64(nrand() % 10000 + 1) * 1000000
 	ck.leader = 0
 	ck.addrs = make([]int, len(servers) + 1)
 	for idx, _ := range(ck.addrs) {
@@ -55,7 +56,6 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	var args GetArgs
-	args.Idx = int(atomic.AddInt64(&ck.idx, 1))
 	args.Key = key
 	fmt.Printf("Begin Get key: %s\n", key)
 	leader := ck.leader
@@ -97,14 +97,16 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Key = key
 	args.Value = value
 	args.Op = op
-	args.Idx = int(atomic.AddInt64(&ck.idx, 1))
-	fmt.Printf("Begin Put key: %s\n", key)
+	args.Idx = atomic.AddUint64(&ck.idx, 1)
+	fmt.Printf("Begin Put key: %s, value: %s, idx: %d\n", key, value, args.Idx)
 	leader := ck.leader
 	for ; ; {
 		var reply PutAppendReply
 		fmt.Printf("Put key %s to %d\n", key, ck.leader)
 		if !ck.servers[leader].Call("KVServer.PutAppend", &args, &reply) {
+			fmt.Printf("Put key %s to %d failed\n", key, ck.leader)
 			time.Sleep(time.Duration(20) * time.Millisecond)
+			leader = (leader + 1) % len(ck.servers)
 			continue
 		}
 		if reply.WrongLeader {
@@ -141,7 +143,7 @@ func (ck *Clerk) getLeader(data string, leader int) int {
 	}
 	ck.mu.Unlock()
 	if l == -1 {
-		time.Sleep(time.Duration(20) * time.Millisecond)
+		time.Sleep(time.Duration(200) * time.Millisecond)
 	}
 	return leader
 }

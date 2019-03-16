@@ -3,7 +3,8 @@ package raft
 import "fmt"
 
 type Entry struct {
-	Data []byte
+	//Data []byte
+	Data interface{}
 	Term int
 	Index int
 	DataIndex int

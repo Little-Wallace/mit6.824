@@ -111,6 +111,7 @@ func checkConcurrentAppends(t *testing.T, v string, counts []int) {
 			}
 			off1 := strings.LastIndex(v, wanted)
 			if off1 != off {
+				fmt.Printf("string value: %s\n", v)
 				t.Fatalf("duplicate element %v in Append result", wanted)
 			}
 			if off <= lastoff {
@@ -488,6 +489,7 @@ func TestOnePartition3A(t *testing.T) {
 
 	cfg.begin("Test: progress in majority (3A)")
 
+	fmt.Printf("---------------------------------step0------------\n")
 	p1, p2 := cfg.make_partition()
 	cfg.partition(p1, p2)
 
@@ -495,9 +497,12 @@ func TestOnePartition3A(t *testing.T) {
 	ckp2a := cfg.makeClient(p2) // connect ckp2a to p2
 	ckp2b := cfg.makeClient(p2) // connect ckp2b to p2
 
+	fmt.Printf("---------------------------------step0.5------------\n")
 	Put(cfg, ckp1, "1", "14")
+	fmt.Printf("---------------------------------step0.6------------\n")
 	check(cfg, t, ckp1, "1", "14")
 
+	fmt.Printf("---------------------------------step1------------\n")
 	cfg.end()
 
 	done0 := make(chan bool)
@@ -513,6 +518,7 @@ func TestOnePartition3A(t *testing.T) {
 		done1 <- true
 	}()
 
+	fmt.Printf("---------------------------------step1.5------------\n")
 	select {
 	case <-done0:
 		t.Fatalf("Put in minority completed")
@@ -526,6 +532,7 @@ func TestOnePartition3A(t *testing.T) {
 	check(cfg, t, ckp1, "1", "16")
 
 	cfg.end()
+	fmt.Printf("---------------------------------step2------------\n")
 
 	cfg.begin("Test: completion after heal (3A)")
 
@@ -535,12 +542,14 @@ func TestOnePartition3A(t *testing.T) {
 
 	time.Sleep(electionTimeout)
 
+	fmt.Printf("---------------------------------step2.5------------\n")
 	select {
 	case <-done0:
 	case <-time.After(30 * 100 * time.Millisecond):
 		t.Fatalf("Put did not complete")
 	}
 
+	fmt.Printf("---------------------------------step3------------\n")
 	select {
 	case <-done1:
 	case <-time.After(30 * 100 * time.Millisecond):
@@ -548,6 +557,7 @@ func TestOnePartition3A(t *testing.T) {
 	default:
 	}
 
+	fmt.Printf("---------------------------------step3.5------------\n")
 	check(cfg, t, ck, "1", "15")
 
 	cfg.end()

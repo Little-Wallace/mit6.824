@@ -129,6 +129,12 @@ func (rf *Raft) GetLeader() int {
 	return rf.leader;
 }
 
+func (rf *Raft) DebugLog() {
+	fmt.Printf("=======%d, log size: %d, commit: %d, applied: %d\n",
+		rf.me, len(rf.raftLog.Entries), rf.raftLog.commited, rf.raftLog.applied)
+	fmt.Printf("=======%d,  state: %d, leader: %d, term: %d\n",
+		rf.me, rf.state, rf.leader, rf.term)
+}
 
 //
 // save Raft's persistent state to stable storage,
