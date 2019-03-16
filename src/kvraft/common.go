@@ -1,7 +1,9 @@
 package raftkv
 
 import (
-	"strconv"
+	"bytes"
+	"labgob"
+	"strings"
 )
 
 const (
@@ -41,14 +43,21 @@ type GetReply struct {
 
 
 
-func GetLeader(data string) int {
-	if leader, err := strconv.Atoi(data); err == nil {
-		return leader
-	}
-	return -1
+func GetLeader(data string) (int, int) {
+	r := strings.NewReader(data)
+	d := labgob.NewDecoder(r)
+	var me int
+	var leader int
+	d.Decode(&me)
+	d.Decode(&leader)
+	return me, leader
 }
 
-func WriteLeader(leader int) string {
-	return strconv.Itoa(leader)
+func WriteLeader(me int, leader int) string {
+	w := new(bytes.Buffer)
+    e := labgob.NewEncoder(w)
+    e.Encode(me)
+	e.Encode(leader)
+	return w.String()
 }
 

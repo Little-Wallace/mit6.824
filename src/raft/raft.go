@@ -125,6 +125,10 @@ func (rf *Raft) GetState() (int, bool) {
     return rf.term, rf.state == Leader
 }
 
+func (rf *Raft) GetLeader() int {
+	return rf.leader;
+}
+
 
 //
 // save Raft's persistent state to stable storage,
@@ -259,7 +263,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 		for _, e := range rf.raftLog.Entries[rf.raftLog.applied+1 : rf.raftLog.commited+1] {
 			m := rf.createApplyMsg(e)
 			if m.CommandValid {
-				fmt.Printf("%d apply an entry of log[%d]=data[%d]=%d\n", rf.me, e.Index, m.CommandIndex, m.Command.(int))
+				fmt.Printf("%d apply an entry of log[%d]=data[%d]\n", rf.me, e.Index, m.CommandIndex)
 				rf.applySM <- m
 			}
 		}
@@ -402,7 +406,7 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 				rf.raftLog.applied += 1
 				if m.CommandValid {
 					rf.applySM <- m
-					fmt.Printf("%d apply a message of log[%d]=data[%d] = %d\n", rf.me, e.Index, m.CommandIndex, m.Command.(int))
+					fmt.Printf("%d apply a message of log[%d]=data[%d]\n", rf.me, e.Index, m.CommandIndex)
 				}
 			}
 			fmt.Printf("%d apply message\n", rf.me)
@@ -482,7 +486,7 @@ func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
 			} else {
 				fmt.Printf("%d win vote\n", rf.me)
 				rf.becomeLeader()
-				rf.propose([]byte{}, rf.raftLog.GetDataIndex())
+				rf.propose(nil, rf.raftLog.GetDataIndex())
 			}
 		} else if reject == quorum {
 			fmt.Printf("%d has been reject by %d members\n", rf.me, reject)
@@ -510,16 +514,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if !rf.IsLeader() {
 		return len(rf.raftLog.Entries), rf.term, false
 	}
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-
 	rf.mu.Lock()
 	index := rf.raftLog.GetDataIndex() + 1
-	fmt.Printf("%d Store a message %d, at index: %d, term: %d\n",
-		rf.me, command.(int), index, rf.term)
-	e.Encode(command)
-	data := w.Bytes()
-	rf.propose(data, index)
+	//fmt.Printf("%d Store a message %d, at index: %d, term: %d\n",
+	//	rf.me, command.(int), index, rf.term)
+	rf.propose(command, index)
 	//logIndex := rf.raftLog.GetLastIndex()
 	rf.mu.Unlock()
 	//accept := rf.sendAppendEntries()
@@ -528,13 +527,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 func (rf *Raft) createApplyMsg(e Entry) ApplyMsg {
 	var applyMsg ApplyMsg
-	var tmp int
-	if len(e.Data) > 0 {
-		r := bytes.NewBuffer(e.Data)
-		d := labgob.NewDecoder(r)
-		d.Decode(&tmp)
+	if e.Data != nil {
 		applyMsg.CommandIndex = e.DataIndex
-		applyMsg.Command = tmp
+		applyMsg.Command = e.Data
 		applyMsg.CommandValid = true
 		//fmt.Printf("%d Apply entre : term: %d, index: %d, value : %d\n", rf.me, e.Term, applyMsg.CommandIndex, tmp)
 	} else {
@@ -727,7 +722,7 @@ func (p SortByFirst) Less(i, j int) bool {
 	return p.Pairs[i].value > p.Pairs[j].value
 }
 
-func (rf *Raft) propose(data []byte, idx int) {
+func (rf *Raft) propose(data interface{}, idx int) {
 	logNum := len(rf.raftLog.Entries)
 	rf.raftLog.Entries = append(rf.raftLog.Entries,
 		Entry{data, rf.term, logNum, idx})
@@ -908,7 +903,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	e := Entry{[]byte{}, 0, 0, 0}
+	e := Entry{nil, 0, 0, 0}
 	rf.raftLog = UnstableLog{
 		[]Entry{e},
 		0, 0, 0,

@@ -9,7 +9,10 @@ import "math/rand"
 import "log"
 import "strings"
 import "sync"
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"fmt"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -188,6 +191,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 	for i := 0; i < nclients; i++ {
 		clnts[i] = make(chan int)
 	}
+	fmt.Printf("-------------------- begin\n")
 	for i := 0; i < 3; i++ {
 		// log.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
@@ -256,6 +260,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		}
 
 		// log.Printf("wait for clients\n")
+		fmt.Printf("--------------------Get begin\n")
 		for i := 0; i < nclients; i++ {
 			// log.Printf("read from clients %d\n", i)
 			j := <-clnts[i]
@@ -267,7 +272,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			v := Get(cfg, ck, key)
 			checkClntAppends(t, i, v, j)
 		}
-
+		fmt.Printf("--------------------Get end\n")
 		if maxraftstate > 0 {
 			// Check maximum after the servers have processed all client
 			// requests and had time to checkpoint.

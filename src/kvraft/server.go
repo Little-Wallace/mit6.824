@@ -47,16 +47,37 @@ type KVServer struct {
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	var op Op
+	op.Idx = args.Idx
+	op.OpType = "Get"
+
+	index, _, ret := kv.rf.Start(op);
+	if !ret {
+		reply.WrongLeader = true
+		reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
+		return
+	}
 	fmt.Printf("Receive a Get operation, key: %s, idx: %d\n", args.Key, args.Idx)
-	// Your code here.
+	for ; kv.rf.IsLeader(); {
+		if kv.dataIndex >= index {
+			reply.WrongLeader = false
+			reply.Value, _ = kv.storage.Get(args.Key)
+			reply.Err = ""
+			return
+		}
+		time.Sleep(time.Duration(40) * time.Millisecond)
+	}
+	reply.WrongLeader = true
+	reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
 }
 
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	if !kv.rf.IsLeader() {
-		reply.WrongLeader = false
-		reply.Err = Err(WriteLeader(kv.rf.GetLeader()))
+		reply.WrongLeader = true
+		reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
+		fmt.Printf("%d is not leader, leader is %d\n", kv.me, kv.rf.GetLeader())
 	} else {
 		if args.Op == "Append" {
 			kv.appendValue(args, reply)
@@ -64,7 +85,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			kv.putValue(args, reply)
 		}
 	}
-	fmt.Printf("Receive a %v operation, key: %s, value: %s, Idx: %d\n", args.Op, args.Key, args.Value, args.Idx)
+	//fmt.Printf("Receive a %v operation, key: %s, value: %s, Idx: %d\n", args.Op, args.Key, args.Value, args.Idx)
 }
 
 //
@@ -80,6 +101,7 @@ func (kv *KVServer) Kill() {
 	var op Op
 	op.OpType = "stop"
 	msg.Command = op
+	msg.CommandValid = true
 	kv.applyCh <- msg
 	for atomic.LoadInt32(&kv.stop) != 2 {
 		time.Sleep(time.Duration(10) * time.Millisecond)
@@ -105,6 +127,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
+	labgob.Register(PutAppendArgs{})
+	labgob.Register(PutAppendReply{})
 
 	kv := new(KVServer)
 	kv.me = me
@@ -113,6 +137,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 
 	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.storage.kv = make(map[string][]byte)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	go kv.startApplyMsgThread()
 	// You may need initialization code here.
@@ -125,7 +150,8 @@ func (kv *KVServer) applyMsgFromRaft(msg *raft.ApplyMsg, op* Op) {
 	if kv.dataIndex + 1 != msg.CommandIndex {
 		fmt.Printf("Error for msg: commandIndex(%d) != kv.index(%d) + 1\n", msg.CommandIndex, kv.dataIndex)
 	}
-	if op.OpType == "Append" {
+	if op.OpType == "Get" {
+	} else if op.OpType == "Append" {
 		value, idx := kv.storage.Get(op.Key)
 		if idx == op.Idx {
 			return
@@ -142,6 +168,9 @@ func (kv *KVServer) startApplyMsgThread() {
 	for atomic.LoadInt32(&kv.stop) == 0 {
 		select {
 		case msg := <-kv.applyCh : {
+			if !msg.CommandValid {
+				continue
+			}
 			data := msg.Command.(Op)
 			if data.OpType == "stop" {
 				break
@@ -159,41 +188,26 @@ func (kv *KVServer) appendValue(args *PutAppendArgs, reply *PutAppendReply) {
 	var op Op
 	op.Idx = args.Idx
 	op.OpType = args.Op
-
+	op.Key = args.Key
+	op.Value = args.Value
 	index, _, ret := kv.rf.Start(op);
 	if !ret {
 		reply.WrongLeader = true
-		reply.Err = Err(WriteLeader(kv.rf.GetLeader()))
+		reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
 		return
 	}
 	for ; kv.rf.IsLeader(); {
 		if kv.dataIndex >= index {
 			reply.WrongLeader = false
+			reply.Err = ""
 			return
 		}
 		time.Sleep(time.Duration(40) * time.Millisecond)
 	}
 	reply.WrongLeader = true
-	reply.Err = Err(WriteLeader(kv.rf.GetLeader()))
+	reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
 }
 
 func (kv *KVServer) putValue(args *PutAppendArgs, reply *PutAppendReply) {
-	var op Op
-	op.Idx = args.Idx
-	op.OpType = args.Op
-	index, _, ret := kv.rf.Start(op);
-	if !ret {
-		reply.WrongLeader = true
-		reply.Err = Err(WriteLeader(kv.rf.GetLeader()))
-		return
-	}
-	for ; kv.rf.IsLeader(); {
-		if kv.dataIndex >= index {
-			reply.WrongLeader = false
-			return
-		}
-		time.Sleep(time.Duration(40) * time.Millisecond)
-	}
-	reply.WrongLeader = true
-	reply.Err = Err(WriteLeader(kv.rf.GetLeader()))
+	kv.appendValue(args, reply)
 }

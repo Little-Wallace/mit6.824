@@ -7,12 +7,16 @@ import (
 	"sync/atomic"
 	"time"
 	"fmt"
+	"sync"
 )
 
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	idx     int64
+	leader  int
+	addrs   []int
+	mu      sync.Mutex
 	// You will have to modify this struct.
 }
 
@@ -27,6 +31,11 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	ck.idx = nrand()
+	ck.leader = 0
+	ck.addrs = make([]int, len(servers) + 1)
+	for idx, _ := range(ck.addrs) {
+		ck.addrs[idx] = -1
+	}
 	// You'll have to add code here.
 	return ck
 }
@@ -48,26 +57,27 @@ func (ck *Clerk) Get(key string) string {
 	var args GetArgs
 	args.Idx = int(atomic.AddInt64(&ck.idx, 1))
 	args.Key = key
-	for i := 0; ; {
+	fmt.Printf("Begin Get key: %s\n", key)
+	leader := ck.leader
+	for ; ; {
 		var reply GetReply
-		if !ck.servers[i].Call("KVServer.Get", &args, &reply) {
+		if !ck.servers[leader].Call("KVServer.Get", &args, &reply) {
 			time.Sleep(time.Duration(20) * time.Millisecond)
 			continue
 		}
 		if reply.WrongLeader {
-			leader := GetLeader(string(reply.Err))
-			if leader != -1 {
-				i = leader
-			} else {
-				i = 0
-				time.Sleep(time.Duration(20) * time.Millisecond)
-			}
+			leader = ck.getLeader(string(reply.Err), leader)
 		} else if reply.Err == ""{
 			return reply.Value
 		} else {
-			fmt.Printf("Error %v\n", reply.Err)
+			fmt.Printf("Error %s\n", reply.Err)
 		}
 	}
+
+	ck.mu.Lock()
+	ck.leader = leader
+	ck.mu.Unlock()
+	fmt.Printf("End Get key: %s\n", key)
 	return ""
 }
 
@@ -88,26 +98,29 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Value = value
 	args.Op = op
 	args.Idx = int(atomic.AddInt64(&ck.idx, 1))
-	for i := 0; ; {
+	fmt.Printf("Begin Put key: %s\n", key)
+	leader := ck.leader
+	for ; ; {
 		var reply PutAppendReply
-		if !ck.servers[i].Call("KVServer.PutAppend", &args, &reply) {
+		fmt.Printf("Put key %s to %d\n", key, ck.leader)
+		if !ck.servers[leader].Call("KVServer.PutAppend", &args, &reply) {
 			time.Sleep(time.Duration(20) * time.Millisecond)
 			continue
 		}
 		if reply.WrongLeader {
-			leader := GetLeader(string(reply.Err))
-			if leader != -1 {
-				i = leader
-			} else {
-				i = 0
-				time.Sleep(time.Duration(20) * time.Millisecond)
-			}
-		} else if reply.Err == ""{
+			leader = ck.getLeader(string(reply.Err), leader)
+			fmt.Printf("Error %s, leader: %d, %d\n", reply.Err, leader, ck.leader)
+		} else if reply.Err == "" {
 			break;
 		} else {
-			fmt.Printf("Error %v\n", reply.Err)
+			fmt.Printf("Error %s\n", reply.Err)
 		}
 	}
+	ck.mu.Lock()
+	ck.leader = leader
+	ck.mu.Unlock()
+
+	fmt.Printf("End Put key: %s\n", key)
 }
 
 func (ck *Clerk) Put(key string, value string) {
@@ -117,4 +130,18 @@ func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
 }
 
-
+func (ck *Clerk) getLeader(data string, leader int) int {
+	me, l := GetLeader(data)
+	ck.mu.Lock()
+	ck.addrs[me] = leader
+	if l != -1 && ck.addrs[l] != -1{
+		leader = ck.addrs[l]
+	} else {
+		leader = (leader + 1) % len(ck.servers)
+	}
+	ck.mu.Unlock()
+	if l == -1 {
+		time.Sleep(time.Duration(20) * time.Millisecond)
+	}
+	return leader
+}
