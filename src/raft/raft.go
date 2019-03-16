@@ -198,10 +198,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	defer rf.maybeChange()
 	reply.To = rf.me
-	//fmt.Printf("%d(%d) AccessRequest(%s) vote from %d(%d)\n", rf.me, rf.term, getMsgName(args.MsgType), args.From, args.Term)
+	fmt.Printf("%d(%d) AccessRequest(%s) vote from %d(%d)\n", rf.me, rf.term, getMsgName(args.MsgType), args.From, args.Term)
 	if !rf.checkVote(args.From, args.Term, args.MsgType, &reply.VoteGranted) || rf.state == Leader {
 		reply.Term = rf.term
-		//fmt.Printf("%d %d reject smaller term: %d\n", rf.me, rf.term, args.Term)
+		fmt.Printf("%d %d reject smaller term: %d\n", rf.me, rf.term, args.Term)
 		return
 	}
 	if ((rf.leader == -1 && rf.vote == -1) || rf.vote == args.From ||
@@ -217,7 +217,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 		return
 	}
-	//fmt.Printf("%d reject vote for: %d, leader: %d, vote: %d\n", rf.me, args.From, rf.leader, rf.vote)
+	fmt.Printf("%d reject vote for: %d, leader: %d, vote: %d\n", rf.me, args.From, rf.leader, rf.vote)
 	reply.VoteGranted = false
 	reply.Term = rf.term
 }
@@ -678,6 +678,7 @@ func (rf *Raft) becomeCandidate(msgType MessageType) int {
 	term := rf.term + 1
 	if msgType == MsgRequestPrevote {
 		rf.state = PreCandidate
+		rf.leader = -1
 	} else {
 		rf.reset(rf.term + 1)
 		rf.state = Candidate
