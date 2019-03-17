@@ -14,20 +14,20 @@ type UnstableLog struct {
 	Entries		[]Entry
 	commited	int
 	applied		int
-	pk			int
+	size		int
 }
 
 func (log *UnstableLog) GetDataIndex() int {
 	//return log.Entries[log.commited].DataIndex
-	return log.Entries[len(log.Entries) - 1].DataIndex
+	return log.Entries[log.size - 1].DataIndex
 }
 
 func (log *UnstableLog) GetLastIndex() int {
-	return log.Entries[len(log.Entries) - 1].Index
+	return log.Entries[log.size - 1].Index
 }
 
 func (log *UnstableLog) GetLastTerm() int {
-	return log.Entries[len(log.Entries) - 1].Term
+	return log.Entries[log.size - 1].Term
 }
 
 func (log *UnstableLog) Append(e Entry) {
@@ -36,12 +36,16 @@ func (log *UnstableLog) Append(e Entry) {
 	} else {
 		log.Entries[e.Index] = e
 	}
+	log.size = e.Index + 1
+	if e.Term < log.Entries[e.Index - 1].Term {
+		fmt.Printf("================ERROR Append a term(%d) in index(%d), which prev term is %d\n",
+			e.Term, e.Index, log.Entries[e.Index - 1].Term)
+	}
 }
 
 func (log *UnstableLog) FindConflict(entries []Entry) int {
-	sz := len(log.Entries)
 	for _, e := range entries {
-		if e.Index >= sz || log.Entries[e.Index].Term != e.Term {
+		if e.Index >= log.size || log.Entries[e.Index].Term != e.Term {
 			return e.Index
 		}
 	}
@@ -63,6 +67,9 @@ func (log *UnstableLog) GetUnApplyEntry() []Entry {
 	return log.Entries[log.applied + 1 : log.commited + 1]
 }
 
+func (log *UnstableLog) GetEntries(since int) []Entry {
+	return log.Entries[since : log.size]
+}
 
 func (log *UnstableLog) MaybeCommit(index int) bool {
 	if index > log.commited && index < len(log.Entries){

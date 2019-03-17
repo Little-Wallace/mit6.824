@@ -147,7 +147,7 @@ func (rf *Raft) persist() {
     e.Encode(rf.term)
 	e.Encode(rf.vote)
 	e.Encode(rf.raftLog.commited)
-	e.Encode(rf.raftLog.Entries)
+	e.Encode(rf.raftLog.Entries[:rf.raftLog.size])
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 	fmt.Printf("%d save to %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
@@ -168,6 +168,7 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.raftLog.commited)
 	d.Decode(&rf.raftLog.Entries)
 	rf.raftLog.applied = 0
+	rf.raftLog.size = len(rf.raftLog.Entries)
 	//for idx, e := range rf.raftLog.Entries {
 	//	if idx > rf.raftLog.commited {
 	//		break
@@ -282,7 +283,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 func (rf *Raft) handleHeartbeat(msg *AppendMessage, reply *AppendReply)  {
 	reply.Success = true
 	reply.Term = MaxInt(rf.term, reply.Term)
-	reply.Commited = len(rf.raftLog.Entries) - 1
+	reply.Commited = rf.raftLog.GetLastIndex()
 	reply.MsgType = MsgHeartbeatReply
 	rf.term = msg.Term
 	if rf.raftLog.MaybeCommit(msg.Commited) {
@@ -293,10 +294,10 @@ func (rf *Raft) handleHeartbeat(msg *AppendMessage, reply *AppendReply)  {
 
 func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 	reply.MsgType = MsgAppendReply
-	index := len(rf.raftLog.Entries)
-	if args.PrevLogIndex >= index {
+	index := rf.raftLog.GetLastIndex()
+	if args.PrevLogIndex > index {
 		fmt.Printf("%d : %d(index: %d, %d) reject append entries from %d(prev index: %d)\n",
-			args.Id, rf.me, index - 1, rf.term, args.From, args.PrevLogIndex)
+			args.Id, rf.me, index, rf.term, args.From, args.PrevLogIndex)
 		reply.Success = false
 		//reply.Commited = index - 1
 		reply.Commited = rf.raftLog.commited
@@ -309,7 +310,7 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 		if conflict_idx == 0 {
 		} else if conflict_idx <= rf.raftLog.commited {
 			fmt.Printf("%d : %d(index: %d, %d) conflict append entries from %d(prev index: %d)\n",
-				args.Id, rf.me, index - 1, rf.term, args.From, args.PrevLogIndex)
+				args.Id, rf.me, index, rf.term, args.From, args.PrevLogIndex)
 			return
 		} else {
 			from := conflict_idx - args.PrevLogIndex - 1
@@ -318,7 +319,6 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 				fmt.Printf("%d access append from %d, append entries from %d to %d\n", rf.me, args.From, args.Entries[from].Index, args.Entries[ed].Index)
 			}
 			for _, e:= range args.Entries[from:] {
-				//rf.raftLog.Entries = append(rf.raftLog.Entries, e)
 				rf.raftLog.Append(e)
 			}
 		}
@@ -332,7 +332,7 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 		reply.Success = false
 		reply.Term = rf.term
 		reply.Commited = args.PrevLogIndex - 1
-		if len(rf.raftLog.Entries) > 2 + rf.raftLog.commited {
+		if rf.raftLog.GetLastIndex() > 2 + rf.raftLog.commited {
 			reply.Commited = rf.raftLog.commited
 		}
 		e := rf.raftLog.Entries[args.PrevLogIndex]
@@ -391,7 +391,7 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		commits := make([]int, len(rf.peers))
 		for i, p := range rf.clients {
 			if i == rf.me {
-				commits[i] = len(rf.raftLog.Entries) - 1
+				commits[i] = rf.raftLog.GetLastIndex()
 			} else {
 				commits[i] = p.matched
 			}
@@ -522,8 +522,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.mu.Lock()
 	index := rf.raftLog.GetDataIndex() + 1
-	//fmt.Printf("%d Store a message %d, at index: %d, term: %d\n",
-	//	rf.me, command.(int), index, rf.term)
+	fmt.Printf("%d Store a message %d, at index: %d, term: %d\n",
+		rf.me, command.(int), index, rf.term)
 	rf.propose(command, index)
 	//logIndex := rf.raftLog.GetLastIndex()
 	rf.mu.Unlock()
@@ -631,7 +631,7 @@ func (rf *Raft) Kill() {
 	}
 	fmt.Printf("Kill Raft %d, fail rpc: %d\n", rf.me, rf.failCount)
 	for atomic.LoadInt32(&rf.stop) != 2 {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}
 	delete(electionTimes, rf.rdElectionTimeout)
 }
@@ -691,10 +691,10 @@ func (rf *Raft) becomeCandidate(msgType MessageType) int {
 }
 
 func (rf *Raft) getUnsendEntries(since int) ([]Entry, int) {
-	if since >= len(rf.raftLog.Entries) {
+	if since > rf.raftLog.GetLastIndex() {
 		return []Entry{}, since - 1
 	}
-	Entries := rf.raftLog.Entries[since:]
+	Entries := rf.raftLog.GetEntries(since)
 	return Entries, since - 1
 }
 
@@ -729,9 +729,8 @@ func (p SortByFirst) Less(i, j int) bool {
 }
 
 func (rf *Raft) propose(data interface{}, idx int) {
-	logNum := len(rf.raftLog.Entries)
-	rf.raftLog.Entries = append(rf.raftLog.Entries,
-		Entry{data, rf.term, logNum, idx})
+	logNum := rf.raftLog.GetLastIndex() + 1
+	rf.raftLog.Append(Entry{data, rf.term, logNum, idx})
 	rf.broadcast()
 }
 
@@ -912,7 +911,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	e := Entry{nil, 0, 0, 0}
 	rf.raftLog = UnstableLog{
 		[]Entry{e},
-		0, 0, 0,
+		0, 0, 1,
 	}
 	rf.prevState = HardState{0, -1, 0}
 	rf.term = 0

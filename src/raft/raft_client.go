@@ -4,6 +4,7 @@ import (
 	"labrpc"
 	"time"
 	"fmt"
+	"sync/atomic"
 )
 
 type RaftClient struct {
@@ -15,7 +16,7 @@ type RaftClient struct {
 	matched int
 	lastAppendTime time.Time
 	active	bool
-	stop	bool
+	stop	int32
 	raft  	*Raft
 }
 
@@ -28,9 +29,11 @@ func (cl *RaftClient) PassAppendTimeout() bool {
 }
 
 func (cl *RaftClient) Start() {
+	cl.stop = 0
 }
 
 func (cl *RaftClient) Stop() {
+	atomic.StoreInt32(&cl.stop, 1)
 }
 
 func (cl *RaftClient) sendAppendEntries(msg AppendMessage) bool {
@@ -42,7 +45,7 @@ func (cl *RaftClient) sendAppendEntries(msg AppendMessage) bool {
 		ok = cl.peer.Call("Raft.AppendEntries", &msg, &reply)
 	}
 	//calcRuntime(start, "sendAppendEntries")
-	if ok {
+	if ok && atomic.LoadInt32(&cl.stop) == 0 {
 		fmt.Printf("send append msg success from %d to %d\n", msg.From, msg.To)
 		cl.raft.msgChan <- reply
 	}
@@ -61,17 +64,23 @@ func (cl *RaftClient) sendRequestVote(args RequestVoteArgs) bool {
 	ok := cl.peer.Call("Raft.RequestVote", &args, &reply)
 	calcRuntime(start, "sendRequestVote")
 	reply.To = args.To
-	if ok {
+	if ok && atomic.LoadInt32(&cl.stop) == 0 {
 		cl.raft.voteChan <- reply
 	}
 	return ok
 }
 
 func (cl *RaftClient) AppendAsync(msg AppendMessage) {
+	if atomic.LoadInt32(&cl.stop) != 0 {
+		return
+	}
 	go cl.sendAppendEntries(msg)
 }
 
 func (cl *RaftClient) VoteAsync(msg RequestVoteArgs) {
+	if atomic.LoadInt32(&cl.stop) != 0 {
+		return
+	}
 	go cl.sendRequestVote(msg)
 }
 
