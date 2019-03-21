@@ -9,6 +9,8 @@ const (
 	MsgHeartbeatReply
 	MsgAppendReply
 	MsgAppend
+	MsgSnapshot
+	MsgSnapshotReply
 	MsgRequestVote
 	MsgRequestVoteReply
 	MsgRequestPrevote

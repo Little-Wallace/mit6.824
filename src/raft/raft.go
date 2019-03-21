@@ -47,6 +47,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	snapshot *Snapshot
 }
 
 
@@ -131,7 +132,7 @@ func (rf *Raft) GetLeader() int {
 
 func (rf *Raft) DebugLog() {
 	fmt.Printf("=======%d, log size: %d, commit: %d, applied: %d\n",
-		rf.me, len(rf.raftLog.Entries), rf.raftLog.commited, rf.raftLog.applied)
+		rf.me, rf.raftLog.Size(), rf.raftLog.commited, rf.raftLog.applied)
 	fmt.Printf("=======%d,  state: %d, leader: %d, term: %d\n",
 		rf.me, rf.state, rf.leader, rf.term)
 }
@@ -157,7 +158,7 @@ func (rf *Raft) persist() {
 //
 // restore previously persisted state.
 //
-func (rf *Raft) readPersist(data []byte) {
+func (rf *Raft) recoverFromPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
@@ -181,6 +182,23 @@ func (rf *Raft) readPersist(data []byte) {
 	fmt.Printf("%d recover from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
 }
 
+func (rf *Raft) recoverFromSnapshot(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+	s := MakeSnapshot(data)
+	rf.raftLog.SetSnapshot(s)
+	//for idx, e := range rf.raftLog.Entries {
+	//	if idx > rf.raftLog.commited {
+	//		break
+	//	}
+	//	m := rf.createApplyMsg(e)
+	//	if m.CommandValid {
+	//		rf.raftLog.pk = m.CommandIndex + 1
+	//	}
+	//}
+	fmt.Printf("%d recover from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
+}
 
 
 
@@ -259,7 +277,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 			args.From, args.Term)
 	if args.MsgType == MsgHeartbeat {
 		fmt.Printf("%d(commit: %d, applied: %d, total: %d) access Heartbeat from %d(%d) to %d\n", rf.me, rf.raftLog.commited,
-			rf.raftLog.applied, len(rf.raftLog.Entries), args.From, args.Commited, args.To)
+			rf.raftLog.applied, rf.raftLog.Size(), args.From, args.Commited, args.To)
 		rf.handleHeartbeat(args, reply)
 	} else {
 		rf.handleAppendEntries(args, reply)
@@ -267,7 +285,11 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 			args.From, args.Commited, args.To)
 	}
 	if rf.raftLog.applied < rf.raftLog.commited {
-		for _, e := range rf.raftLog.Entries[rf.raftLog.applied+1 : rf.raftLog.commited+1] {
+		entries := rf.raftLog.GetEntries(rf.raftLog.applied + 1)
+		for _, e := range entries {
+			if e.Index > rf.raftLog.commited {
+				break
+			}
 			m := rf.createApplyMsg(e)
 			if m.CommandValid {
 				fmt.Printf("%d apply an entry of log[%d]=data[%d]\n", rf.me, e.Index, m.CommandIndex)
@@ -288,7 +310,7 @@ func (rf *Raft) handleHeartbeat(msg *AppendMessage, reply *AppendReply)  {
 	rf.term = msg.Term
 	if rf.raftLog.MaybeCommit(msg.Commited) {
 		fmt.Printf("%d commit to %d, log length: %d, last index:%d leader : %d\n",
-			rf.me, rf.raftLog.commited, len(rf.raftLog.Entries), rf.raftLog.GetLastIndex(), msg.From)
+			rf.me, rf.raftLog.commited, rf.raftLog.Size(), rf.raftLog.GetLastIndex(), msg.From)
 	}
 }
 
@@ -304,7 +326,7 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 		reply.Term = rf.term
 		return
 	}
-	if rf.raftLog.Entries[args.PrevLogIndex].Term == args.PrevLogTerm {
+	if rf.raftLog.MatchIndexAndTerm(args.PrevLogIndex, args.PrevLogTerm) {
 		lastIndex := args.PrevLogIndex + len(args.Entries)
 		conflict_idx := rf.raftLog.FindConflict(args.Entries)
 		if conflict_idx == 0 {
@@ -323,7 +345,7 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 			}
 		}
 		fmt.Printf("%d commit to %d -> min(%d, %d) all msg: %d -> %d, preindex :%d\n", rf.me, rf.raftLog.commited,
-			args.Commited, lastIndex, index, len(rf.raftLog.Entries), args.PrevLogIndex)
+			args.Commited, lastIndex, index, rf.raftLog.Size(), args.PrevLogIndex)
 		rf.raftLog.MaybeCommit(MinInt(args.Commited, lastIndex))
 		reply.Term = rf.term
 		reply.Commited = lastIndex
@@ -335,9 +357,10 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 		if rf.raftLog.GetLastIndex() > 2 + rf.raftLog.commited {
 			reply.Commited = rf.raftLog.commited
 		}
-		e := rf.raftLog.Entries[args.PrevLogIndex]
-		fmt.Printf("%d(index: %d, term: %d) %d reject append entries from %d(prev index: %d, term: %d)\n",
-			rf.me, e.Index, e.Term, rf.raftLog.commited, args.From, args.PrevLogIndex, args.PrevLogTerm)
+		fmt.Printf("%d(commit  %d) reject append entries from %d(prev index: %d, term: %d)\n",
+			rf.me, rf.raftLog.commited, args.From, args.PrevLogIndex, args.PrevLogTerm)
+		//fmt.Printf("%d(index: %d, term: %d) %d reject append entries from %d(prev index: %d, term: %d)\n",
+		//	rf.me, e.Index, e.Term, rf.raftLog.commited, args.From, args.PrevLogIndex, args.PrevLogTerm)
 	}
 }
 
@@ -401,7 +424,7 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		fmt.Printf("%d receive a msg commit : %d from %d\n", rf.me, reply.Commited, reply.From)
 		fmt.Printf("%d commit %d, to commit %d, apply %d, all: %d\n",
 			rf.me, rf.raftLog.commited, commits[quorum], rf.raftLog.applied,
-			len(rf.raftLog.Entries))
+			rf.raftLog.size)
 		if rf.raftLog.commited < commits[quorum] {
 			rf.raftLog.commited = commits[quorum]
 			for _, e := range rf.raftLog.GetUnApplyEntry() {
@@ -518,12 +541,12 @@ func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if !rf.IsLeader() {
-		return len(rf.raftLog.Entries), rf.term, false
+		return rf.raftLog.Size(), rf.term, false
 	}
 	rf.mu.Lock()
 	index := rf.raftLog.GetDataIndex() + 1
-	fmt.Printf("%d Store a message %d, at index: %d, term: %d\n",
-		rf.me, command.(int), index, rf.term)
+	fmt.Printf("%d Store a message, at index: %d, term: %d\n",
+		rf.me, index, rf.term)
 	rf.propose(command, index)
 	//logIndex := rf.raftLog.GetLastIndex()
 	rf.mu.Unlock()
@@ -630,7 +653,7 @@ func (rf *Raft) Kill() {
 		}
 	}
 	fmt.Printf("Kill Raft %d, fail rpc: %d\n", rf.me, rf.failCount)
-	for atomic.LoadInt32(&rf.stop) != 2 {
+	for ts := 1; atomic.LoadInt32(&rf.stop) != 2 && ts < 10; ts ++ {
 		time.Sleep(500 * time.Millisecond)
 	}
 	delete(electionTimes, rf.rdElectionTimeout)
@@ -882,6 +905,7 @@ func (rf *Raft) step() {
 	for atomic.LoadInt32(&rf.stop) == 0{
 		//ret := false
 		if !rf.doCallback() {
+			atomic.StoreInt32(&rf.stop, 2)
 			return
 		}
 		rf.mu.Lock()
@@ -911,14 +935,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	e := Entry{nil, 0, 0, 0}
 	rf.raftLog = UnstableLog{
 		[]Entry{e},
-		0, 0, 1,
+		0, 0, 1, nil,
 	}
 	rf.prevState = HardState{0, -1, 0}
 	rf.term = 0
 	rf.vote = -1
 	rf.electionTimeout = 800
 	rf.rdElectionTimeout = 800 + 40 * int32(me)
-	electionTimes[rf.rdElectionTimeout] = true
 	rf.lastHeartBeat = time.Now()
 	rf.lastElection = time.Now()
 	rf.stop = 0
@@ -928,7 +951,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votes = make([]int, len(rf.peers))
 	// Your initialization code here.
 	rf.becomeFollower(0, -1)
-	rf.readPersist(persister.ReadRaftState())
+	//rf.recoverFromSnapshot(persister.ReadSnapshot())
+	rf.recoverFromPersist(persister.ReadRaftState())
 	rf.clients = make([]RaftClient, len(rf.peers))
 	for idx := range rf.clients {
 		if idx != rf.me {
