@@ -188,15 +188,10 @@ func (rf *Raft) recoverFromSnapshot(data []byte) {
 	}
 	s := MakeSnapshot(data)
 	rf.raftLog.SetSnapshot(s)
-	//for idx, e := range rf.raftLog.Entries {
-	//	if idx > rf.raftLog.commited {
-	//		break
-	//	}
-	//	m := rf.createApplyMsg(e)
-	//	if m.CommandValid {
-	//		rf.raftLog.pk = m.CommandIndex + 1
-	//	}
-	//}
+	var msg ApplyMsg
+	msg.CommandValid = false
+	msg.snapshot = s
+	rf.applySM <- msg
 	fmt.Printf("%d recover from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
 }
 
@@ -595,7 +590,6 @@ func (rf *Raft) appendMore(idx int) {
 	msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
 	msg.Commited = rf.raftLog.commited
 	rf.clients[msg.To].AppendAsync(msg)
-	rf.clients[msg.To].lastAppendTime = time.Now()
 }
 
 func (rf *Raft) checkAppend(from int, term int, msgType MessageType) bool {
@@ -643,9 +637,6 @@ func (rf *Raft) checkVote(from int, term int, msgType MessageType, accept* bool)
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
-	var msg AppendReply
-	msg.MsgType = MsgStop
-	rf.msgChan <- msg
 	atomic.StoreInt32(&rf.stop, 1)
 	for idx := range rf.clients {
 		if idx != rf.me {
@@ -766,10 +757,6 @@ func (rf *Raft) broadcast() {
 			rf.clients[id].lastAppendTime = time.Now()
 			msg.To = id
 			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(pr.next)
-			//if len(msg.Entries) == 0 {
-			//	continue
-			//}
-			//msg.Commited = MinInt(rf.raftLog.commited, pr.matched)
 			msg.Commited = rf.raftLog.commited
 			fmt.Printf("%d: broadcast append to %d since %d\n", rf.me, id, pr.next)
 			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
@@ -832,15 +819,24 @@ func (rf *Raft) campaign(msgType MessageType) {
 			msg.LastLogIndex = lastLogIndex
 			msg.LastLogTerm = lastLogTerm
 			msg.To = idx
-			//go rf.sendRequestVote(msg)
 			rf.clients[idx].VoteAsync(msg)
-			//rf.argsChan <- msg
 		}
 	}
 }
 
 func (rf *Raft) passed_election_time(electionTimeout int32, now time.Time) bool {
 	return rf.lastElection.Add(time.Duration(electionTimeout) * time.Millisecond).Before(now)
+}
+
+func (rf *Raft) tick() {
+	rf.mu.Lock()
+	if rf.state == Leader {
+		rf.tick_leader()
+	} else {
+		rf.tick_follower()
+	}
+	rf.mu.Unlock()
+	rf.maybeChange()
 }
 
 func (rf *Raft) tick_leader() {
@@ -852,11 +848,9 @@ func (rf *Raft) tick_leader() {
 	} else if rf.lastHeartBeat.Add(time.Duration(200) * time.Millisecond).Before(now) {
 		rf.lastHeartBeat = now
 		msg := rf.createMessage(0, MsgHeartbeat)
-		// unlock in broad heartbeat
 		rf.bcastHeartbeat(msg)
 	}
 }
-
 
 func (rf *Raft) tick_follower() {
 	now := time.Now()
@@ -866,57 +860,33 @@ func (rf *Raft) tick_follower() {
 	}
 }
 
-func (rf *Raft) doCallback() bool {
-	sz := 20
-	noMore := false
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	for ; sz > 0 && atomic.LoadInt32(&rf.stop) == 0; sz -- {
+func (rf *Raft) step() {
+	for atomic.LoadInt32(&rf.stop) == 0{
+		rf.tick()
 		select {
 		case msg := <- rf.voteChan : {
-			if msg.MsgType == MsgStop || rf.stop == 1 {
-				return false
+			if atomic.LoadInt32(&rf.stop) != 0 {
+				break
 			}
 			if rf.state != Candidate && rf.state != PreCandidate && rf.leader != -1 {
 				break
 			}
+			rf.mu.Lock()
 			rf.handleVoteReply(&msg)
+			rf.mu.Unlock()
 		}
 		case msg := <- rf.msgChan : {
-			if msg.MsgType == MsgStop || rf.stop == 1 {
-				return false
+			if atomic.LoadInt32(&rf.stop) != 0 {
+				break
 			}
+			rf.mu.Lock()
 			rf.handleAppendReply(&msg)
+			rf.mu.Unlock()
 		}
-		default:
-			noMore = true
+		case <-time.After(time.Duration(40) * time.Millisecond): {
 			break
 		}
-		if noMore {
-			break
 		}
-	}
-	defer rf.maybeChange()
-	return true
-}
-
-func (rf *Raft) step() {
-	for atomic.LoadInt32(&rf.stop) == 0{
-		//ret := false
-		if !rf.doCallback() {
-			atomic.StoreInt32(&rf.stop, 2)
-			return
-		}
-		rf.mu.Lock()
-		if rf.state == Leader {
-			rf.tick_leader()
-		} else {
-			rf.tick_follower()
-		}
-		rf.mu.Unlock()
-		rf.maybeChange()
-		time.Sleep(time.Duration(40) * time.Millisecond)
 	}
 	fmt.Printf("Stop Raft: %d\n", rf.me)
 	atomic.StoreInt32(&rf.stop, 2)
@@ -951,8 +921,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votes = make([]int, len(rf.peers))
 	// Your initialization code here.
 	rf.becomeFollower(0, -1)
-	//rf.recoverFromSnapshot(persister.ReadSnapshot())
 	rf.recoverFromPersist(persister.ReadRaftState())
+	rf.recoverFromSnapshot(persister.ReadSnapshot())
 	rf.clients = make([]RaftClient, len(rf.peers))
 	for idx := range rf.clients {
 		if idx != rf.me {

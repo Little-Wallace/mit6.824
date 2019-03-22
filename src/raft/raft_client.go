@@ -44,7 +44,7 @@ func (cl *RaftClient) sendAppendEntries(msg AppendMessage) bool {
 	if !ok && ed.Sub(start).Seconds() < 0.2 {
 		ok = cl.peer.Call("Raft.AppendEntries", &msg, &reply)
 	}
-	//calcRuntime(start, "sendAppendEntries")
+	calcRuntime(start, "sendAppendEntries")
 	if ok && atomic.LoadInt32(&cl.stop) == 0 {
 		fmt.Printf("send append msg success from %d to %d\n", msg.From, msg.To)
 		cl.raft.msgChan <- reply
@@ -71,16 +71,13 @@ func (cl *RaftClient) sendRequestVote(args RequestVoteArgs) bool {
 }
 
 func (cl *RaftClient) AppendAsync(msg AppendMessage) {
-	if atomic.LoadInt32(&cl.stop) != 0 {
-		return
+	if msg.MsgType == MsgAppend || msg.MsgType == MsgSnapshot {
+		cl.lastAppendTime = time.Now()
 	}
 	go cl.sendAppendEntries(msg)
 }
 
 func (cl *RaftClient) VoteAsync(msg RequestVoteArgs) {
-	if atomic.LoadInt32(&cl.stop) != 0 {
-		return
-	}
 	go cl.sendRequestVote(msg)
 }
 
