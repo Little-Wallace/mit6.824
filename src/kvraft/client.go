@@ -102,9 +102,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	leader := ck.leader
 	for ; ; {
 		var reply PutAppendReply
-		fmt.Printf("Put key %s to %d\n", key, ck.leader)
+		fmt.Printf("Put key %s to %d\n", key, leader)
 		if !ck.servers[leader].Call("KVServer.PutAppend", &args, &reply) {
-			fmt.Printf("Put key %s to %d failed\n", key, ck.leader)
+			fmt.Printf("Put key %s to %d failed\n", key, leader)
 			time.Sleep(time.Duration(20) * time.Millisecond)
 			leader = (leader + 1) % len(ck.servers)
 			continue

@@ -6,6 +6,7 @@ import (
 	"raft"
 	"bytes"
 	"labgob"
+	"fmt"
 )
 
 type Storage struct {
@@ -38,22 +39,39 @@ func (s *Storage) CheckCommand(idx uint64) bool {
 func (s *Storage) ApplySnapshot(snap *raft.Snapshot) error {
 	r := bytes.NewBuffer(snap.Data)
 	d := labgob.NewDecoder(r)
-	kv := make(map[string]string)
-	if err := d.Decode(&s.kv); err != nil {
+	var size int
+	d.Decode(&size)
+	arrs := make([]string, size)
+	if err := d.Decode(&arrs); err != nil {
+		fmt.Printf("recover failed\n")
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.kv = kv
+	fmt.Printf("_recover map___%d_%d___%d\n", len(s.kv), size, len(snap.Data))
+	for i := 0; i < size; i += 2 {
+		s.kv[arrs[i]] = arrs[i + 1]
+		fmt.Printf("recover: kv[%s]=%s\n", arrs[i], arrs[i + 1])
+	}
 	return nil
 }
 
 func (s *Storage) Bytes() []byte {
 	s.mu.Lock()
+	size := 0
+	arrs := make([]string, len(s.kv) * 2)
+	for k, v := range s.kv {
+		arrs[size] = k
+		size ++
+		arrs[size] = v
+		size ++
+	}
+	fmt.Printf("store a map , size : %d, arra len: %d, size: %d\n", len(s.kv), len(arrs), size)
+	s.mu.Unlock()
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(s.kv)
-	s.mu.Unlock()
+	e.Encode(size)
+	e.Encode(arrs)
 	return w.Bytes()
 }
 

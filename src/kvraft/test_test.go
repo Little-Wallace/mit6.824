@@ -84,6 +84,8 @@ func checkClntAppends(t *testing.T, clnt int, v string, count int) {
 		wanted := "x " + strconv.Itoa(clnt) + " " + strconv.Itoa(j) + " y"
 		off := strings.Index(v, wanted)
 		if off < 0 {
+			fmt.Printf("%v missing element %v in Append result %v\n", clnt, wanted, v)
+			panic("missing element")
 			t.Fatalf("%v missing element %v in Append result %v", clnt, wanted, v)
 		}
 		off1 := strings.LastIndex(v, wanted)
@@ -269,7 +271,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			// 	log.Printf("Warning: client %d managed to perform only %d put operations in 1 sec?\n", i, j)
 			// }
 			key := strconv.Itoa(i)
-			// log.Printf("Check %v for client %d\n", j, i)
+			log.Printf("Check %v for client %d\n", j, i)
 			v := Get(cfg, ck, key)
 			checkClntAppends(t, i, v, j)
 		}
@@ -619,9 +621,11 @@ func TestSnapshotRPC3B(t *testing.T) {
 
 	cfg.begin("Test: InstallSnapshot RPC (3B)")
 
+	fmt.Printf("---------------------------------step0------------\n")
 	Put(cfg, ck, "a", "A")
 	check(cfg, t, ck, "a", "A")
 
+	fmt.Printf("---------------------------------step1------------\n")
 	// a bunch of puts into the majority partition.
 	cfg.partition([]int{0, 1}, []int{2})
 	{
@@ -633,6 +637,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 		Put(cfg, ck1, "b", "B")
 	}
 
+	fmt.Printf("---------------------------------step2------------\n")
 	// check that the majority partition has thrown away
 	// most of its log entries.
 	if cfg.LogSize() > 2*maxraftstate {
@@ -652,6 +657,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 		check(cfg, t, ck1, "49", "49")
 	}
 
+	fmt.Printf("---------------------------------step3------------\n")
 	// now everybody
 	cfg.partition([]int{0, 1, 2}, []int{})
 
@@ -660,6 +666,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 	check(cfg, t, ck, "e", "E")
 	check(cfg, t, ck, "1", "1")
 
+	fmt.Printf("---------------------------------step4------------\n")
 	cfg.end()
 }
 

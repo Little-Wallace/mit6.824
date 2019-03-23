@@ -64,6 +64,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			reply.WrongLeader = false
 			reply.Value = kv.storage.Get(args.Key)
 			reply.Err = ""
+			fmt.Printf("finish Get operation, key: %s, value: %s\n", args.Key, reply.Value)
 			return
 		}
 		time.Sleep(time.Duration(40) * time.Millisecond)
@@ -81,7 +82,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		fmt.Printf("_______________replicate command key: %s, value: %s\n", args.Key, args.Value)
 		return
 	}
-	fmt.Printf("Begin PutAppend key: %s, value: %s, type: %s\n", args.Key, args.Value, args.Op)
+	fmt.Printf("Begin PutAppend key to %d : key %s, value: %s, type: %s\n", kv.me, args.Key, args.Value, args.Op)
 	if !kv.rf.IsLeader() {
 		reply.WrongLeader = true
 		reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
@@ -106,7 +107,7 @@ func (kv *KVServer) Kill() {
 	op.OpType = "stop"
 	msg.Command = op
 	msg.CommandValid = true
-	kv.applyCh <- msg
+	//kv.applyCh <- msg
 	for atomic.LoadInt32(&kv.stop) != 2 {
 		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
@@ -144,9 +145,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	//kv.storage.kv = make(map[string][]byte)
 	kv.storage.kv = make(map[string]string)
 	kv.storage.commands = make(map[uint64]time.Time)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.persister = persister
 	go kv.startApplyMsgThread()
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	// You may need initialization code here.
 
 	return kv
@@ -154,7 +155,12 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 func (kv *KVServer) applySnapshot(s *raft.Snapshot) {
 	kv.mu.Lock()
-	kv.storage.ApplySnapshot(s)
+	if e := kv.storage.ApplySnapshot(s); e != nil {
+		fmt.Printf("%d apply error: %s\n", kv.me, e.Error())
+		panic("Apply Error")
+	}
+	kv.dataIndex = int32(s.DataIndex)
+	fmt.Printf("%d Apply a snapshot in index: %d\n", kv.me, s.Index)
 	kv.mu.Unlock()
 }
 
@@ -167,11 +173,14 @@ func (kv *KVServer) applyMsgFromRaft(index int32,  op* Op) {
 		value := kv.storage.Get(op.Key)
 		value += op.Value
 		kv.storage.Put(op.Idx, op.Key, value)
+		fmt.Printf("%d Apply a msg of type: %s, key: %s in index: %d, value: %s\n",
+			kv.me, op.OpType, op.Key, index, value)
 	} else {
 		kv.storage.Put(op.Idx, op.Key, op.Value)
+		fmt.Printf("%d Apply a msg of type: %s, key: %s in index: %d, value: %s\n",
+			kv.me, op.OpType, op.Key, index, op.Value)
 	}
 	atomic.StoreInt32(&kv.dataIndex, index)
-	fmt.Printf("Apply a msg of type: %s, key: %s in index: %d\n", op.OpType, op.Key, index)
 }
 
 func (kv *KVServer) startApplyMsgThread() {
@@ -193,10 +202,12 @@ func (kv *KVServer) startApplyMsgThread() {
 			lastIndex = msg.LogIndex
 		}
 		case <-time.After(time.Duration(10) * time.Millisecond) : {
-			if kv.stop != 0 {
+			if kv.stop != 0 || kv.maxraftstate == -1 {
 				break
 			}
 			if lastIndex != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+				fmt.Printf("=========================%d: raft size: %d, maxraftsize: %d, kv[0]=%s\n",
+					kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, kv.storage.Get("0"))
 				if !kv.rf.CreateSnapshot(kv.storage.Bytes(), lastIndex) {
 					fmt.Printf("Apply Error\n")
 				}

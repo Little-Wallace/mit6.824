@@ -65,6 +65,7 @@ type HardState struct {
 	vote 		int
 	commited	int
 }
+
 type SnapshotMessage struct {
 	MsgType			MessageType
 	Term			int
@@ -91,7 +92,11 @@ func getMsgName(msgType MessageType) string {
 	} else if msgType == MsgHeartbeat {
 		return "Heartbeat"
 	} else if msgType == MsgHeartbeatReply {
-		return "HeartbeatReplly"
+		return "HeartbeatReply"
+	} else if msgType == MsgSnapshot {
+		return "Snapshot"
+	} else if msgType == MsgSnapshotReply {
+		return "SnapshotReply"
 	} else {
 		return "Unkown"
 	}

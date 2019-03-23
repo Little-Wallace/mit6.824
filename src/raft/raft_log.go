@@ -67,7 +67,7 @@ func (log *UnstableLog) MatchIndexAndTerm(index int, term int) bool {
 			return false
 		}
 		if index == log.snapshot.Index {
-			return true
+			return term == log.snapshot.Term
 		}
 		return log.Entries[index - log.snapshot.Index - 1].Term == term
 	}
@@ -78,6 +78,9 @@ func (log *UnstableLog) GetEntry(idx int) *Entry {
 	prevSize := 0
 	if log.snapshot != nil {
 		prevSize = log.snapshot.Index + 1
+		if idx == log.snapshot.Index {
+			return &Entry{nil, log.snapshot.Term, log.snapshot.Index, log.snapshot.DataIndex}
+		}
 	}
 	return &log.Entries[idx - prevSize]
 }
@@ -131,8 +134,9 @@ func (log *UnstableLog) GetUnApplyEntry() []Entry {
 	prevSize := 0
 	if log.snapshot != nil {
 		prevSize = log.snapshot.Index + 1
+		//fmt.Printf("============Error=======log size %d, apply %d, commit %d, snapshot size: %d, unstable size: %d\n",
+		//	log.size, log.applied, log.commited, prevSize, len(log.Entries))
 	}
-
 	return log.Entries[log.applied + 1 - prevSize : log.commited + 1 - prevSize]
 }
 

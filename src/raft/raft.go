@@ -144,7 +144,7 @@ func (rf *Raft) DebugLog() {
 //
 func (rf *Raft) persist() {
 	rf.persister.SaveRaftState(rf.getRaftStateData())
-	fmt.Printf("%d save to %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
+	fmt.Printf("%d save to %d, %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited, rf.raftLog.size)
 }
 
 
@@ -180,13 +180,25 @@ func (rf *Raft) recoverFromSnapshot(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	s := MakeSnapshot(data)
-	rf.raftLog.SetSnapshot(s)
+	rf.raftLog.snapshot = s
 	var msg ApplyMsg
 	msg.CommandValid = false
 	msg.Snap = s
 	rf.applySM <- msg
-	fmt.Printf("%d recover snapshot from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
+	rf.raftLog.applied = s.Index
+	entries := rf.raftLog.GetUnApplyEntry()
+	for _, e := range entries {
+		m := rf.createApplyMsg(e)
+		if m.CommandValid {
+			rf.applySM <- m
+		}
+		rf.raftLog.applied += 1
+	}
+	fmt.Printf("%d recover snapshot(%d) applied: %d, commit: %d, %d\n",
+		rf.me, len(s.Data), rf.raftLog.applied, rf.raftLog.commited, rf.raftLog.size)
 }
 
 func (rf *Raft) applySnapshot(s *Snapshot) bool {
@@ -226,11 +238,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	start := time.Now()
 	defer calcRuntime(start, "RequestVote")
+	fmt.Printf("%d(%d) AccessRequest(%s) vote from %d(%d)\n", rf.me, rf.term, getMsgName(args.MsgType), args.From, args.Term)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.maybeChange()
 	reply.To = rf.me
-	fmt.Printf("%d(%d) AccessRequest(%s) vote from %d(%d)\n", rf.me, rf.term, getMsgName(args.MsgType), args.From, args.Term)
 	if !rf.checkVote(args.From, args.Term, args.MsgType, &reply.VoteGranted) || rf.state == Leader {
 		reply.Term = rf.term
 		fmt.Printf("%d %d reject smaller term: %d\n", rf.me, rf.term, args.Term)
@@ -252,44 +264,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	fmt.Printf("%d reject vote for: %d, leader: %d, vote: %d\n", rf.me, args.From, rf.leader, rf.vote)
 	reply.VoteGranted = false
 	reply.Term = rf.term
-}
-
-func (rf *Raft) AppendSnapshot(args *AppendMessage, reply* AppendReply) {
-	start := time.Now()
-	defer calcRuntime(start, "AppendEntries")
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	reply.To = args.From
-	reply.From = rf.me
-	reply.MsgType = getResponseType(args.MsgType)
-	if !rf.checkAppend(args.From, args.Term, args.MsgType) {
-		fmt.Printf("%d reject (%s) from leader: %d, term: %d, leadder term: %d\n", rf.me, getMsgName(args.MsgType),
-			args.From, rf.term, args.Term)
-		reply.Success = false
-		reply.Term = rf.term
-		reply.Commited = 0
-		rf.mu.Unlock()
-		return
-	}
-	rf.leader = args.From
-	rf.lastElection = time.Now()
-	rf.state = Follower
-	fmt.Printf("%d(%d) access snapshot from %d(%d)\n", rf.me, rf.term,
-			args.From, args.Term)
-	snap := args.Snap
-	if rf.applySnapshot(&snap) {
-		reply.Success = true
-		reply.Commited = snap.Index
-		reply.Term = args.Term
-		fmt.Printf("%d(%d) apply snapshot from %d(%d) success\n", rf.me, rf.raftLog.commited,
-			args.From, snap.Index)
-	} else {
-		reply.Success = false
-		reply.Commited = rf.raftLog.commited
-		reply.Term = args.Term
-		fmt.Printf("%d(%d) apply snapshot from %d(%d) failed\n", rf.me, rf.raftLog.commited,
-			args.From, snap.Index)
-	}
 }
 
 func getResponseType(msg MessageType) MessageType {
@@ -417,8 +391,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 func (rf *Raft) CreateSnapshot(data []byte, index int) bool {
 	rf.mu.Lock()
-	fmt.Printf("%d create snapshot which index to %d, log size: %d, last index %d, unstable size: %d\n",
-		rf.me, index, rf.raftLog.Size(), rf.raftLog.GetLastIndex(), len(rf.raftLog.Entries))
+	fmt.Printf("%d create snapshot which index to %d, snapshot size: %d, log size: %d, last index %d, unstable size: %d\n",
+		rf.me, index, len(data),rf.raftLog.Size(), rf.raftLog.GetLastIndex(), len(rf.raftLog.Entries))
 	term := rf.raftLog.GetEntry(index).Term
 	s := &Snapshot{index, rf.raftLog.GetEntry(index).DataIndex, term, data}
 	rf.raftLog.SetSnapshot(s)
@@ -464,14 +438,16 @@ func MinInt(a int, b int) int {
 func (rf *Raft) appendMore(idx int) {
 	snap := rf.raftLog.GetSnapshot()
 	if snap != nil && rf.clients[idx].next <= snap.Index {
-		msg := rf.createMessage(idx, MsgAppend)
+		msg := rf.createMessage(idx, MsgSnapshot)
 		msg.Snap = *snap
 		msg.Commited = rf.raftLog.commited
+		fmt.Printf("%d send AppendSnapshot to %d since %d, which matched (%d, %d)\n",
+			rf.me, idx, rf.clients[idx].next, rf.clients[idx].matched, rf.raftLog.commited)
 		rf.clients[idx].AppendAsync(&msg)
 	} else {
 		msg := rf.createMessage(idx, MsgAppend)
 		msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(rf.clients[idx].next)
-		fmt.Printf("%d send again handleAppendReply to %d since %d, which matched (%d, %d)\n",
+		fmt.Printf("%d send AppendEntries to %d since %d, which matched (%d, %d)\n",
 			rf.me, idx, rf.clients[idx].next, rf.clients[idx].matched, rf.raftLog.commited)
 		msg.PrevLogTerm = rf.raftLog.GetEntry(msg.PrevLogIndex).Term
 		msg.Commited = rf.raftLog.commited
@@ -737,6 +713,7 @@ func (rf *Raft) tick_follower() {
 }
 
 func (rf *Raft) step() {
+	rf.recoverFromSnapshot(rf.persister.ReadSnapshot())
 	for atomic.LoadInt32(&rf.stop) == 0{
 		rf.tick()
 		select {
@@ -798,7 +775,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here.
 	rf.becomeFollower(0, -1)
 	rf.recoverFromPersist(persister.ReadRaftState())
-	rf.recoverFromSnapshot(persister.ReadSnapshot())
 	rf.clients = make([]RaftClient, len(rf.peers))
 	for idx := range rf.clients {
 		if idx != rf.me {

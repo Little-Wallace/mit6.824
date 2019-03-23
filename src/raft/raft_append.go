@@ -38,6 +38,10 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 		rf.handleAppendEntries(args, reply)
 		fmt.Printf("%d(%d) access append from %d(%d) to %d\n", rf.me, rf.raftLog.commited,
 			args.From, args.Commited, args.To)
+	} else if args.MsgType == MsgSnapshot {
+		rf.handleAppendSnapshot(args, reply)
+		rf.mu.Unlock()
+		return
 	}
 	if rf.raftLog.applied < rf.raftLog.commited {
 		entries := rf.raftLog.GetUnApplyEntry()
@@ -51,10 +55,27 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 		}
 		rf.raftLog.applied = rf.raftLog.commited
 	}
-	rf.mu.Unlock()
 	rf.maybeChange()
+	rf.mu.Unlock()
 }
 
+
+func (rf *Raft) handleAppendSnapshot(args *AppendMessage, reply* AppendReply) {
+	snap := args.Snap
+	if rf.applySnapshot(&snap) {
+		reply.Success = true
+		reply.Commited = snap.Index
+		reply.Term = args.Term
+		fmt.Printf("%d(%d) apply snapshot from %d(%d) success\n", rf.me, rf.raftLog.commited,
+			args.From, snap.Index)
+	} else {
+		reply.Success = false
+		reply.Commited = rf.raftLog.commited
+		reply.Term = args.Term
+		fmt.Printf("%d(%d) apply snapshot from %d(%d) failed\n", rf.me, rf.raftLog.commited,
+			args.From, snap.Index)
+	}
+}
 
 func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 	reply.MsgType = MsgAppendReply
@@ -134,6 +155,8 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 	if reply.MsgType == MsgHeartbeatReply {
 		if pr.matched < rf.raftLog.GetLastIndex() && pr.PassAppendTimeout() {
 			rf.appendMore(reply.From)
+		} else {
+			fmt.Printf("%d skip append to %d because last append time: %v\n", rf.me, reply.From, pr.lastAppendTime)
 		}
 		fmt.Printf("%d access HeartbeatReply from %d(matched: %d, %d)\n", rf.me, reply.From,
 			pr.matched, rf.raftLog.GetLastIndex())
@@ -141,6 +164,12 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 	} else if reply.MsgType == MsgSnapshotReply {
 		fmt.Printf("%d access Snapshot Reply from %d(matched: %d, %d)\n", rf.me, reply.From,
 			pr.matched, rf.raftLog.GetLastIndex())
+		if reply.Success {
+			if pr.matched < reply.Commited {
+				pr.matched = reply.Commited
+				pr.next = pr.matched + 1
+			}
+		}
 		return
 	}
 	if !reply.Success {
@@ -184,11 +213,12 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 				}
 				if m.CommandValid {
 					rf.applySM <- m
-					fmt.Printf("%d apply a message of log[%d]=data[%d]\n", rf.me, e.Index, m.CommandIndex)
+					fmt.Printf("%d apply an entry in leader, log[%d]=data[%d]\n", rf.me, e.Index, m.CommandIndex)
 				}
 				rf.raftLog.applied += 1
 			}
 			fmt.Printf("%d apply message\n", rf.me)
+			rf.maybeChange()
 		}
 		fmt.Printf("%d send handleAppendReply end\n", rf.me)
 	}

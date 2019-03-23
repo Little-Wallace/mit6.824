@@ -23,7 +23,7 @@ type RaftClient struct {
 
 func (cl *RaftClient) PassAppendTimeout() bool {
 	t := time.Now()
-	if t.Sub(cl.lastAppendTime).Seconds() < 1.0 {
+	if t.Sub(cl.lastAppendTime).Seconds() > 1.0 {
 		return true
 	}
 	return false
@@ -41,13 +41,13 @@ func (cl *RaftClient) Stop() {
 func (cl *RaftClient) sendSnapshot(msg AppendMessage) bool {
 	start := time.Now()
 	var reply AppendReply
-	ok := cl.peer.Call("Raft.AppendSnapshot", &msg, &reply)
+	ok := cl.peer.Call("Raft.AppendEntries", &msg, &reply)
 	for !ok && atomic.LoadInt32(&cl.stop) == 0 &&
 		atomic.LoadInt32(&cl.pendingSnapshot) == int32(msg.Snap.Index) {
 		ok = cl.peer.Call("Raft.AppendEntries", &msg, &reply)
 		//time.Sleep(time.Duration(10) * time.Millisecond)
 	}
-	calcRuntime(start, "sendSnapshot")
+	calcRuntime(start, "send AppendSnapshot")
 	if ok && atomic.LoadInt32(&cl.stop) == 0 {
 		fmt.Printf("send append msg success from %d to %d\n", msg.From, msg.To)
 		cl.raft.msgChan <- reply
@@ -85,6 +85,8 @@ func (cl *RaftClient) sendRequestVote(args RequestVoteArgs) bool {
 	reply.To = args.To
 	if ok && atomic.LoadInt32(&cl.stop) == 0 {
 		cl.raft.voteChan <- reply
+	} else {
+		fmt.Printf("send request vote from %d to %d, failed %v, %d\n", args.From, args.To, ok, atomic.LoadInt32(&cl.stop))
 	}
 	return ok
 }
@@ -98,6 +100,7 @@ func (cl *RaftClient) AppendAsync(msg *AppendMessage) {
 	} else if msg.MsgType == MsgSnapshot {
 		idx := int32(msg.Snap.Index)
 		if idx <= atomic.LoadInt32(&cl.pendingSnapshot) {
+			fmt.Printf("skip snapshot %d, because there is a bigger one: %d\n", idx, atomic.LoadInt32(&cl.pendingSnapshot))
 			return
 		}
 		atomic.StoreInt32(&cl.pendingSnapshot, idx)
