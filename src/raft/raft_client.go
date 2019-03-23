@@ -17,6 +17,7 @@ type RaftClient struct {
 	lastAppendTime time.Time
 	active	bool
 	stop	int32
+	pendingSnapshot int32
 	raft  	*Raft
 }
 
@@ -30,10 +31,28 @@ func (cl *RaftClient) PassAppendTimeout() bool {
 
 func (cl *RaftClient) Start() {
 	cl.stop = 0
+	cl.pendingSnapshot = 0
 }
 
 func (cl *RaftClient) Stop() {
 	atomic.StoreInt32(&cl.stop, 1)
+}
+
+func (cl *RaftClient) sendSnapshot(msg AppendMessage) bool {
+	start := time.Now()
+	var reply AppendReply
+	ok := cl.peer.Call("Raft.AppendSnapshot", &msg, &reply)
+	for !ok && atomic.LoadInt32(&cl.stop) == 0 &&
+		atomic.LoadInt32(&cl.pendingSnapshot) == int32(msg.Snap.Index) {
+		ok = cl.peer.Call("Raft.AppendEntries", &msg, &reply)
+		//time.Sleep(time.Duration(10) * time.Millisecond)
+	}
+	calcRuntime(start, "sendSnapshot")
+	if ok && atomic.LoadInt32(&cl.stop) == 0 {
+		fmt.Printf("send append msg success from %d to %d\n", msg.From, msg.To)
+		cl.raft.msgChan <- reply
+	}
+	return ok
 }
 
 func (cl *RaftClient) sendAppendEntries(msg AppendMessage) bool {
@@ -41,7 +60,7 @@ func (cl *RaftClient) sendAppendEntries(msg AppendMessage) bool {
 	var reply AppendReply
 	ok := cl.peer.Call("Raft.AppendEntries", &msg, &reply)
 	ed := time.Now()
-	if !ok && ed.Sub(start).Seconds() < 0.2 {
+	if !ok && ed.Sub(start).Seconds() < 0.2 && atomic.LoadInt32(&cl.stop) == 0 {
 		ok = cl.peer.Call("Raft.AppendEntries", &msg, &reply)
 	}
 	calcRuntime(start, "sendAppendEntries")
@@ -70,11 +89,20 @@ func (cl *RaftClient) sendRequestVote(args RequestVoteArgs) bool {
 	return ok
 }
 
-func (cl *RaftClient) AppendAsync(msg AppendMessage) {
-	if msg.MsgType == MsgAppend || msg.MsgType == MsgSnapshot {
+func (cl *RaftClient) AppendAsync(msg *AppendMessage) {
+	if msg.MsgType == MsgAppend {
 		cl.lastAppendTime = time.Now()
+		go cl.sendAppendEntries(*msg)
+	} else if msg.MsgType == MsgHeartbeat {
+		go cl.sendAppendEntries(*msg)
+	} else if msg.MsgType == MsgSnapshot {
+		idx := int32(msg.Snap.Index)
+		if idx <= atomic.LoadInt32(&cl.pendingSnapshot) {
+			return
+		}
+		atomic.StoreInt32(&cl.pendingSnapshot, idx)
+		go cl.sendSnapshot(*msg)
 	}
-	go cl.sendAppendEntries(msg)
 }
 
 func (cl *RaftClient) VoteAsync(msg RequestVoteArgs) {

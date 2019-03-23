@@ -3,6 +3,9 @@ package raftkv
 import (
 	"sync"
 	"time"
+	"raft"
+	"bytes"
+	"labgob"
 )
 
 type Storage struct {
@@ -19,17 +22,7 @@ func (s *Storage) Get(key string) string {
 		return v
 	}
 	return ""
-	//if v, ok := s.kv[key]; ok {
-	//	//r := bytes.NewBuffer([]byte(v))
-	//	r := bytes.NewBuffer(v)
-	//	d := labgob.NewDecoder(r)
-	//	var idx int
-	//	var value string
-	//	d.Decode(&idx)
-	//	d.Decode(&value)
-	//	return value, idx
-	//}
-	//return "", -1
+
 
 }
 
@@ -42,6 +35,28 @@ func (s *Storage) CheckCommand(idx uint64) bool {
 	return false
 }
 
+func (s *Storage) ApplySnapshot(snap *raft.Snapshot) error {
+	r := bytes.NewBuffer(snap.Data)
+	d := labgob.NewDecoder(r)
+	kv := make(map[string]string)
+	if err := d.Decode(&s.kv); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kv = kv
+	return nil
+}
+
+func (s *Storage) Bytes() []byte {
+	s.mu.Lock()
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(s.kv)
+	s.mu.Unlock()
+	return w.Bytes()
+}
+
 func (s *Storage) Put(idx uint64, key string, value string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -50,10 +65,6 @@ func (s *Storage) Put(idx uint64, key string, value string) {
 	}
 	s.kv[key] = value
 	s.commands[idx] = time.Now()
-	//w := new(bytes.Buffer)
-	//e := labgob.NewEncoder(w)
-	//e.Encode(idx)
-	//e.Encode(value)
-	//s.kv[key] = w.Bytes()
+
 }
 

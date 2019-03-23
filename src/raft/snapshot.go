@@ -6,7 +6,6 @@ import "labgob"
 type Snapshot struct {
 	Index         int
 	Term          int
-	Size          int
 	Data          []byte
 }
 
@@ -17,7 +16,15 @@ func MakeSnapshot(data []byte) *Snapshot {
 	d := labgob.NewDecoder(r)
 	d.Decode(&s.Index)
 	d.Decode(&s.Term)
-	d.Decode(&s.Size)
 	d.Decode(&s.Data)
 	return s
+}
+
+func (s *Snapshot) Bytes() []byte {
+	w := new(bytes.Buffer)
+    e := labgob.NewEncoder(w)
+    e.Encode(s.Index)
+	e.Encode(s.Term)
+	e.Encode(s.Data)
+    return w.Bytes()
 }

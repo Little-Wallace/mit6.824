@@ -47,7 +47,8 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
-	snapshot *Snapshot
+	LogIndex     int
+	Snap *Snapshot
 }
 
 
@@ -143,18 +144,21 @@ func (rf *Raft) DebugLog() {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
+	rf.persister.SaveRaftState(rf.getRaftStateData())
+	fmt.Printf("%d save to %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
+}
+
+
+func (rf *Raft) getRaftStateData() []byte {
 	w := new(bytes.Buffer)
     e := labgob.NewEncoder(w)
     e.Encode(rf.term)
 	e.Encode(rf.vote)
 	e.Encode(rf.raftLog.commited)
-	e.Encode(rf.raftLog.Entries[:rf.raftLog.size])
-	data := w.Bytes()
-	rf.persister.SaveRaftState(data)
-	fmt.Printf("%d save to %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
+	e.Encode(rf.raftLog.size)
+	e.Encode(rf.raftLog.GetUnstableEntries())
+	return w.Bytes()
 }
-
-
 //
 // restore previously persisted state.
 //
@@ -167,18 +171,9 @@ func (rf *Raft) recoverFromPersist(data []byte) {
 	d.Decode(&rf.term)
 	d.Decode(&rf.vote)
 	d.Decode(&rf.raftLog.commited)
+	d.Decode(&rf.raftLog.size)
 	d.Decode(&rf.raftLog.Entries)
 	rf.raftLog.applied = 0
-	rf.raftLog.size = len(rf.raftLog.Entries)
-	//for idx, e := range rf.raftLog.Entries {
-	//	if idx > rf.raftLog.commited {
-	//		break
-	//	}
-	//	m := rf.createApplyMsg(e)
-	//	if m.CommandValid {
-	//		rf.raftLog.pk = m.CommandIndex + 1
-	//	}
-	//}
 	fmt.Printf("%d recover from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
 }
 
@@ -190,11 +185,27 @@ func (rf *Raft) recoverFromSnapshot(data []byte) {
 	rf.raftLog.SetSnapshot(s)
 	var msg ApplyMsg
 	msg.CommandValid = false
-	msg.snapshot = s
+	msg.Snap = s
 	rf.applySM <- msg
 	fmt.Printf("%d recover from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
 }
 
+func (rf *Raft) applySnapshot(s *Snapshot) bool {
+	if s == nil {
+		return false
+	}
+	if !rf.raftLog.SetSnapshot(s) {
+		return false
+	}
+	var msg ApplyMsg
+	msg.CommandValid = false
+	msg.Snap = s
+	msg.LogIndex = s.Index
+	rf.applySM <- msg
+	rf.persister.SaveStateAndSnapshot(rf.getRaftStateData(), s.Bytes())
+	fmt.Printf("%d recover from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
+	return true
+}
 
 
 //
@@ -214,6 +225,7 @@ func calcRuntime(t time.Time, f string) {
 	now := time.Now()
 	fmt.Printf("%s cost %f millisecond\n", f, now.Sub(t).Seconds() * 1000)
 }
+
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	start := time.Now()
@@ -274,27 +286,63 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 		fmt.Printf("%d(commit: %d, applied: %d, total: %d) access Heartbeat from %d(%d) to %d\n", rf.me, rf.raftLog.commited,
 			rf.raftLog.applied, rf.raftLog.Size(), args.From, args.Commited, args.To)
 		rf.handleHeartbeat(args, reply)
-	} else {
+	} else if args.MsgType == MsgAppend {
 		rf.handleAppendEntries(args, reply)
 		fmt.Printf("%d(%d) access append from %d(%d) to %d\n", rf.me, rf.raftLog.commited,
 			args.From, args.Commited, args.To)
 	}
 	if rf.raftLog.applied < rf.raftLog.commited {
-		entries := rf.raftLog.GetEntries(rf.raftLog.applied + 1)
+		entries := rf.raftLog.GetUnApplyEntry()
 		for _, e := range entries {
-			if e.Index > rf.raftLog.commited {
-				break
-			}
 			m := rf.createApplyMsg(e)
 			if m.CommandValid {
 				fmt.Printf("%d apply an entry of log[%d]=data[%d]\n", rf.me, e.Index, m.CommandIndex)
 				rf.applySM <- m
 			}
+			rf.raftLog.applied = e.Index
 		}
 		rf.raftLog.applied = rf.raftLog.commited
 	}
 	rf.mu.Unlock()
 	rf.maybeChange()
+}
+
+func (rf *Raft) AppendSnapshot(args *AppendMessage, reply* AppendReply) {
+	start := time.Now()
+	defer calcRuntime(start, "AppendEntries")
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply.To = args.From
+	reply.From = rf.me
+	reply.MsgType = getResponseType(args.MsgType)
+	if !rf.checkAppend(args.From, args.Term, args.MsgType) {
+		fmt.Printf("%d reject (%s) from leader: %d, term: %d, leadder term: %d\n", rf.me, getMsgName(args.MsgType),
+			args.From, rf.term, args.Term)
+		reply.Success = false
+		reply.Term = rf.term
+		reply.Commited = 0
+		rf.mu.Unlock()
+		return
+	}
+	rf.leader = args.From
+	rf.lastElection = time.Now()
+	rf.state = Follower
+	fmt.Printf("%d(%d) access snapshot from %d(%d)\n", rf.me, rf.term,
+			args.From, args.Term)
+	snap := args.Snap
+	if rf.applySnapshot(&snap) {
+		reply.Success = true
+		reply.Commited = snap.Index
+		reply.Term = args.Term
+		fmt.Printf("%d(%d) apply snapshot from %d(%d) success\n", rf.me, rf.raftLog.commited,
+			args.From, snap.Index)
+	} else {
+		reply.Success = false
+		reply.Commited = rf.raftLog.commited
+		reply.Term = args.Term
+		fmt.Printf("%d(%d) apply snapshot from %d(%d) failed\n", rf.me, rf.raftLog.commited,
+			args.From, snap.Index)
+	}
 }
 
 func (rf *Raft) handleHeartbeat(msg *AppendMessage, reply *AppendReply)  {
@@ -313,8 +361,8 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 	reply.MsgType = MsgAppendReply
 	index := rf.raftLog.GetLastIndex()
 	if args.PrevLogIndex > index {
-		fmt.Printf("%d : %d(index: %d, %d) reject append entries from %d(prev index: %d)\n",
-			args.Id, rf.me, index, rf.term, args.From, args.PrevLogIndex)
+		fmt.Printf("%d(index: %d, %d) reject append entries from %d(prev index: %d)\n",
+			rf.me, index, rf.term, args.From, args.PrevLogIndex)
 		reply.Success = false
 		//reply.Commited = index - 1
 		reply.Commited = rf.raftLog.commited
@@ -326,8 +374,8 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 		conflict_idx := rf.raftLog.FindConflict(args.Entries)
 		if conflict_idx == 0 {
 		} else if conflict_idx <= rf.raftLog.commited {
-			fmt.Printf("%d : %d(index: %d, %d) conflict append entries from %d(prev index: %d)\n",
-				args.Id, rf.me, index, rf.term, args.From, args.PrevLogIndex)
+			fmt.Printf("%d(index: %d, %d) conflict append entries from %d(prev index: %d)\n",
+				rf.me, index, rf.term, args.From, args.PrevLogIndex)
 			return
 		} else {
 			from := conflict_idx - args.PrevLogIndex - 1
@@ -364,6 +412,12 @@ func getResponseType(msg MessageType) MessageType {
 		return MsgAppendReply
 	} else if msg == MsgHeartbeat {
 		return MsgHeartbeatReply
+	} else if msg == MsgSnapshot {
+		return MsgSnapshotReply
+	} else if msg == MsgRequestVote {
+		return MsgRequestVoteReply
+	} else if msg == MsgRequestPrevote {
+		return MsgRequestPrevoteReply
 	}
 	return MsgStop
 }
@@ -385,6 +439,10 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 			rf.appendMore(reply.From)
 		}
 		fmt.Printf("%d access HeartbeatReply from %d(matched: %d, %d)\n", rf.me, reply.From,
+			pr.matched, rf.raftLog.GetLastIndex())
+		return
+	} else if reply.MsgType == MsgSnapshotReply {
+		fmt.Printf("%d access Snapshot Reply from %d(matched: %d, %d)\n", rf.me, reply.From,
 			pr.matched, rf.raftLog.GetLastIndex())
 		return
 	}
@@ -427,11 +485,11 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 				if e.Index != rf.raftLog.applied + 1 {
 					fmt.Printf("%d APPLY ERROR! %d, %d\n", rf.me, e.Index, rf.raftLog.applied)
 				}
-				rf.raftLog.applied += 1
 				if m.CommandValid {
 					rf.applySM <- m
 					fmt.Printf("%d apply a message of log[%d]=data[%d]\n", rf.me, e.Index, m.CommandIndex)
 				}
+				rf.raftLog.applied += 1
 			}
 			fmt.Printf("%d apply message\n", rf.me)
 		}
@@ -543,16 +601,25 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	fmt.Printf("%d Store a message, at index: %d, term: %d\n",
 		rf.me, index, rf.term)
 	rf.propose(command, index)
-	//logIndex := rf.raftLog.GetLastIndex()
 	rf.mu.Unlock()
-	//accept := rf.sendAppendEntries()
 	return index, rf.term, true
+}
+
+func (rf *Raft) CreateSnapshot(data []byte, index int) bool {
+	rf.mu.Lock()
+	term := rf.raftLog.GetEntry(index).Term
+	s := &Snapshot{index, term, data}
+	rf.raftLog.SetSnapshot(s)
+	rf.persister.SaveStateAndSnapshot(rf.getRaftStateData(), s.Bytes())
+	rf.mu.Unlock()
+	return true
 }
 
 func (rf *Raft) createApplyMsg(e Entry) ApplyMsg {
 	var applyMsg ApplyMsg
 	if e.Data != nil {
 		applyMsg.CommandIndex = e.DataIndex
+		applyMsg.LogIndex = e.Index
 		applyMsg.Command = e.Data
 		applyMsg.CommandValid = true
 		//fmt.Printf("%d Apply entre : term: %d, index: %d, value : %d\n", rf.me, e.Term, applyMsg.CommandIndex, tmp)
@@ -583,13 +650,21 @@ func MinInt(a int, b int) int {
 
 
 func (rf *Raft) appendMore(idx int) {
-	msg := rf.createMessage(idx, MsgAppend)
-	msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(rf.clients[idx].next)
-	fmt.Printf("%d send again handleAppendReply to %d since %d, which matched (%d, %d)\n",
-		rf.me, idx, rf.clients[idx].next, rf.clients[idx].matched, rf.raftLog.commited)
-	msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-	msg.Commited = rf.raftLog.commited
-	rf.clients[msg.To].AppendAsync(msg)
+	snap := rf.raftLog.GetSnapshot()
+	if snap != nil && rf.clients[idx].next <= snap.Index {
+		msg := rf.createMessage(idx, MsgAppend)
+		msg.Snap = *snap
+		msg.Commited = rf.raftLog.commited
+		rf.clients[idx].AppendAsync(&msg)
+	} else {
+		msg := rf.createMessage(idx, MsgAppend)
+		msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(rf.clients[idx].next)
+		fmt.Printf("%d send again handleAppendReply to %d since %d, which matched (%d, %d)\n",
+			rf.me, idx, rf.clients[idx].next, rf.clients[idx].matched, rf.raftLog.commited)
+		msg.PrevLogTerm = rf.raftLog.GetEntry(msg.PrevLogIndex).Term
+		msg.Commited = rf.raftLog.commited
+		rf.clients[msg.To].AppendAsync(&msg)
+	}
 }
 
 func (rf *Raft) checkAppend(from int, term int, msgType MessageType) bool {
@@ -706,7 +781,7 @@ func (rf *Raft) becomeCandidate(msgType MessageType) int {
 
 func (rf *Raft) getUnsendEntries(since int) ([]Entry, int) {
 	if since > rf.raftLog.GetLastIndex() {
-		return []Entry{}, since - 1
+		return []Entry{}, rf.raftLog.GetLastIndex()
 	}
 	Entries := rf.raftLog.GetEntries(since)
 	return Entries, since - 1
@@ -751,16 +826,16 @@ func (rf *Raft) propose(data interface{}, idx int) {
 func (rf *Raft) broadcast() {
 	fmt.Printf("%d: BeginSend append entries\n", rf.me)
 	defer fmt.Printf("%d: EndSend append entries:\n", rf.me)
-	msg := rf.createMessage(0, MsgAppend)
+	//msg := rf.createMessage(0, MsgAppend)
 	for id, pr := range rf.clients {
 		if id != int(rf.me) {
-			rf.clients[id].lastAppendTime = time.Now()
-			msg.To = id
-			msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(pr.next)
-			msg.Commited = rf.raftLog.commited
+			rf.appendMore(id)
 			fmt.Printf("%d: broadcast append to %d since %d\n", rf.me, id, pr.next)
-			msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
-			rf.clients[msg.To].AppendAsync(msg)
+			//msg.To = id
+			//msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(pr.next)
+			//msg.Commited = rf.raftLog.commited
+			//msg.PrevLogTerm = rf.raftLog.Entries[msg.PrevLogIndex].Term
+			//rf.clients[msg.To].AppendAsync(&msg)
 		}
 	}
 	rf.lastHeartBeat = time.Now()
@@ -772,7 +847,7 @@ func (rf *Raft) bcastHeartbeat(msg AppendMessage) {
 			msg.To = idx
 			msg.Commited = MinInt(pr.matched, rf.raftLog.commited)
 			fmt.Printf("%d: broadcast heartbeat to %d, commit to min(%d, %d)\n", rf.me, idx, pr.matched, rf.raftLog.commited)
-			rf.clients[msg.To].AppendAsync(msg)
+			rf.clients[msg.To].AppendAsync(&msg)
 		}
 	}
 }

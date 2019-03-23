@@ -27,6 +27,7 @@ type AppendMessage struct {
 	PrevLogTerm		int
 	Id          	int
 	Entries			[]Entry
+	Snap            Snapshot
 }
 
 type AppendReply struct {
@@ -63,6 +64,13 @@ type HardState struct {
 	term 		int
 	vote 		int
 	commited	int
+}
+type SnapshotMessage struct {
+	MsgType			MessageType
+	Term			int
+	From			int
+	To 				int
+	Commited		int
 }
 
 func getMsgName(msgType MessageType) string {

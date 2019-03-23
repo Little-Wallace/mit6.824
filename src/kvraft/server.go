@@ -36,6 +36,7 @@ type KVServer struct {
 	mu      sync.Mutex
 	me      int
 	rf      *raft.Raft
+	persister *raft.Persister
 	applyCh chan raft.ApplyMsg
 
 	maxraftstate int // snapshot if log grows this big
@@ -144,12 +145,18 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.storage.kv = make(map[string]string)
 	kv.storage.commands = make(map[uint64]time.Time)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.persister = persister
 	go kv.startApplyMsgThread()
 	// You may need initialization code here.
 
 	return kv
 }
 
+func (kv *KVServer) applySnapshot(s *raft.Snapshot) {
+	kv.mu.Lock()
+	kv.storage.ApplySnapshot(s)
+	kv.mu.Unlock()
+}
 
 func (kv *KVServer) applyMsgFromRaft(index int32,  op* Op) {
 	if kv.dataIndex + 1 != index {
@@ -168,17 +175,32 @@ func (kv *KVServer) applyMsgFromRaft(index int32,  op* Op) {
 }
 
 func (kv *KVServer) startApplyMsgThread() {
+	lastIndex := -1
 	for atomic.LoadInt32(&kv.stop) == 0 {
 		select {
 		case msg := <-kv.applyCh : {
-			if !msg.CommandValid {
-				continue
+			if msg.Snap != nil {
+				kv.applySnapshot(msg.Snap)
+				break
+			} else if !msg.CommandValid {
+				break
 			}
 			data := msg.Command.(Op)
 			if data.OpType == "stop" {
 				break
 			}
 			kv.applyMsgFromRaft(int32(msg.CommandIndex), &data)
+			lastIndex = msg.LogIndex
+		}
+		case <-time.After(time.Duration(10) * time.Millisecond) : {
+			if kv.stop != 0 {
+				break
+			}
+			if lastIndex != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+				if !kv.rf.CreateSnapshot(kv.storage.Bytes(), lastIndex) {
+					fmt.Printf("Apply Error\n")
+				}
+			}
 		}
 		}
 	}
