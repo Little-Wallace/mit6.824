@@ -52,7 +52,7 @@ func (s *Storage) ApplySnapshot(snap *raft.Snapshot) error {
 	defer s.mu.Unlock()
 	for i := 0; i < size; i += 2 {
 		s.kv[arrs[i]] = arrs[i + 1]
-		if arrs[i] < "3" && len(arrs[i]) < 2 {
+		if arrs[i] < "3" && len(arrs[i]) <= 2 {
 			fmt.Printf("recover: kv[%s]=%s\n", arrs[i], arrs[i + 1])
 		}
 	}
@@ -72,6 +72,9 @@ func (s *Storage) Bytes() []byte {
 		size ++
 		arrs[size] = v
 		size ++
+		if k < "3" && len(k) <= 2 {
+			fmt.Printf("store: kv[%s]=%s\n", k, v)
+		}
 	}
 	fmt.Printf("store a map , size : %d, arra len: %d, size: %d\n", len(s.kv), len(arrs), size)
 	s.mu.Unlock()
@@ -82,7 +85,7 @@ func (s *Storage) Bytes() []byte {
 	now := time.Now()
 	ts := make([]uint64, 0)
 	for k, v := range s.commands {
-		if now.Sub(v).Seconds() > 10 {
+		if now.Sub(v).Seconds() > 20 {
 			continue
 		}
 		//fmt.Printf("store: commands[%d]\n", k)
@@ -96,10 +99,12 @@ func (s *Storage) Put(idx uint64, key string, value string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok :=	s.commands[idx]; ok {
+		fmt.Printf("skip put key: %s, value: %s, idx: %d\n", key, value, idx)
 		return
 	}
+	now := time.Now()
 	s.kv[key] = value
-	s.commands[idx] = time.Now()
-
+	s.commands[idx] = now
+	delete(s.commands, idx - 100)
 }
 

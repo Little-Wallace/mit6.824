@@ -31,7 +31,7 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	ck.idx = uint64(nrand() % 10000 + 1) * 1000000
+	ck.idx = uint64(nrand() % 1000000 + 1) * 10000
 	ck.leader = 0
 	ck.addrs = make([]int, len(servers) + 1)
 	for idx, _ := range ck.addrs {
@@ -66,9 +66,9 @@ func (ck *Clerk) Get(key string) string {
 			continue
 		}
 		if reply.WrongLeader {
-			lastLeader := leader
+			//lastLeader := leader
 			leader = ck.getLeader(string(reply.Err), leader)
-			fmt.Printf("Get Key %s, wrongleader %d, change leader to %d\n", key, lastLeader, leader)
+			//fmt.Printf("Get Key %s, wrongleader %d, change leader to %d\n", key, lastLeader, leader)
 		} else if reply.Err == ""{
 			return reply.Value
 		} else {
@@ -100,7 +100,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Value = value
 	args.Op = op
 	args.Idx = atomic.AddUint64(&ck.idx, 1)
-	fmt.Printf("Begin Put key: %s, value: %s, idx: %d\n", key, value, args.Idx)
+	fmt.Printf("Begin %s key: %s, value: %s, idx: %d\n", op, key, value, args.Idx)
 	leader := ck.leader
 	for ; ; {
 		var reply PutAppendReply
@@ -113,7 +113,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		}
 		if reply.WrongLeader {
 			leader = ck.getLeader(string(reply.Err), leader)
-			fmt.Printf("Error %s, leader: %d, %d\n", reply.Err, leader, ck.leader)
+			//fmt.Printf("Error %s, leader: %d, %d\n", reply.Err, leader, ck.leader)
 		} else if reply.Err == "" {
 			break;
 		} else {

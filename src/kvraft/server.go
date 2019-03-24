@@ -169,8 +169,8 @@ func (kv *KVServer) applyMsgFromRaft(index int32,  op* Op) {
 		value := kv.storage.Get(op.Key)
 		value += op.Value
 		kv.storage.Put(op.Idx, op.Key, value)
-		fmt.Printf("%d Apply a msg of type: %s, key: %s in index: %d, value: %s\n",
-			kv.me, op.OpType, op.Key, index, value)
+		fmt.Printf("%d Apply a msg of type: %s, key: (%s,%s) in index: %d,value: %s\n",
+			kv.me, op.OpType, op.Key, op.Value, index, value)
 	} else {
 		kv.storage.Put(op.Idx, op.Key, op.Value)
 		fmt.Printf("%d Apply a msg of type: %s, key: %s in index: %d, value: %s\n",

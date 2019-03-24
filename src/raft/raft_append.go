@@ -65,7 +65,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 
 func (rf *Raft) handleAppendSnapshot(args *AppendMessage, reply* AppendReply) {
 	snap := args.Snap
-	if rf.applySnapshot(&snap) {
+	if args.Snap.Index > rf.raftLog.commited && rf.applySnapshot(&snap) {
 		reply.Success = true
 		reply.Commited = snap.Index
 		reply.Term = args.Term
