@@ -46,6 +46,8 @@ func (s *Storage) ApplySnapshot(snap *raft.Snapshot) error {
 		fmt.Printf("recover failed\n")
 		return err
 	}
+	var ts []uint64
+	d.Decode(&ts)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := 0; i < size; i += 2 {
@@ -53,6 +55,10 @@ func (s *Storage) ApplySnapshot(snap *raft.Snapshot) error {
 		if arrs[i] < "3" && len(arrs[i]) < 2 {
 			fmt.Printf("recover: kv[%s]=%s\n", arrs[i], arrs[i + 1])
 		}
+	}
+	for _, k := range ts {
+		s.commands[k] = time.Now()
+		//fmt.Printf("recover: commands[%d]\n", k)
 	}
 	return nil
 }
@@ -73,6 +79,16 @@ func (s *Storage) Bytes() []byte {
 	e := labgob.NewEncoder(w)
 	e.Encode(size)
 	e.Encode(arrs)
+	now := time.Now()
+	ts := make([]uint64, 0)
+	for k, v := range s.commands {
+		if now.Sub(v).Seconds() > 10 {
+			continue
+		}
+		//fmt.Printf("store: commands[%d]\n", k)
+		ts = append(ts, k)
+	}
+	e.Encode(ts)
 	return w.Bytes()
 }
 
