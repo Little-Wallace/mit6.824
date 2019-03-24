@@ -194,10 +194,11 @@ func (kv *KVServer) startApplyMsgThread() {
 			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
 				fmt.Printf("=========================%d: raft size: %d, maxraftsize: %d, kv[0]=%s\n",
 					kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, kv.storage.Get("0"))
-				if !kv.rf.CreateSnapshot(kv.storage.Bytes(), msg.LogIndex) {
-					fmt.Printf("%d Apply Error from apply channel\n", kv.me)
-					panic("panic APPLY ERROR")
-				}
+				go kv.rf.CreateSnapshot(kv.storage.Bytes(), msg.LogIndex)
+				//if !kv.rf.CreateSnapshot(kv.storage.Bytes(), msg.LogIndex) {
+				//	fmt.Printf("%d Apply Error from apply channel\n", kv.me)
+				//	panic("panic APPLY ERROR")
+				//}
 			}
 		}
 		case <-time.After(time.Duration(500) * time.Millisecond) : {

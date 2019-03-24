@@ -41,10 +41,6 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 		return
 	}
 	if rf.raftLog.applied < rf.raftLog.commited {
-		rf.mu.Unlock()
-		rf.dataMu.Lock()
-		defer rf.dataMu.Unlock()
-		rf.mu.Lock()
 		entries := rf.raftLog.GetUnApplyEntry()
 		//if len(entries) > 0 {
 		//	fmt.Printf("%d apply entries from %d to %d, which commited is %d, applied is %d\n",
@@ -54,9 +50,7 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 			m := rf.createApplyMsg(e)
 			if m.CommandValid {
 				fmt.Printf("%d apply an entry of log[%d]=data[%d]\n", rf.me, e.Index, m.CommandIndex)
-				rf.mu.Unlock()
 				rf.applySM <- m
-				rf.mu.Lock()
 			}
 			rf.raftLog.applied = e.Index
 			//if rf.raftLog.applied > rf.raftLog.commited {
@@ -110,7 +104,8 @@ func (rf *Raft) handleAppendEntries(args *AppendMessage, reply *AppendReply)  {
 			from := conflict_idx - args.PrevLogIndex - 1
 			ed := len(args.Entries) - 1
 			if ed >= 0 {
-				fmt.Printf("%d access append from %d, append entries from %d to %d\n", rf.me, args.From, args.Entries[from].Index, args.Entries[ed].Index)
+				fmt.Printf("%d access append from %d, append entries from %d to %d, prev: %d, conflict: %d\n",
+					rf.me, args.From, from, ed, args.PrevLogIndex, conflict_idx)
 			}
 			for _, e:= range args.Entries[from:] {
 				rf.raftLog.Append(e)
@@ -150,8 +145,6 @@ func (rf *Raft) handleHeartbeat(msg *AppendMessage, reply *AppendReply)  {
 
 
 func (rf *Raft) handleAppendReply(reply* AppendReply) {
-	//start := time.Now()
-	//defer calcRuntime(start, "handleAppendReply")
 	//fmt.Printf("%d handleAppendReply from %d at %v\n", rf.me, reply.From, start)
 	if !rf.checkAppend(reply.From, reply.Term, reply.MsgType) {
 		return
@@ -181,10 +174,6 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		}
 		return
 	}
-	rf.mu.Unlock()
-	rf.dataMu.Lock()
-	defer rf.dataMu.Unlock()
-	rf.mu.Lock()
 	if !reply.Success {
 		//fmt.Printf("%d(%d) handleAppendReply failed, from %d(%d). which matched %d\n",
 		//	rf.me, rf.raftLog.commited, reply.From, reply.Commited, pr.matched)
@@ -227,17 +216,14 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 					panic("APPLY ERROR")
 				}
 				if m.CommandValid {
-					rf.mu.Unlock()
 					rf.applySM <- m
 					fmt.Printf("%d apply an entry in leader, log[%d]=data[%d]\n", rf.me, e.Index, m.CommandIndex)
-					rf.mu.Lock()
 				}
 				rf.raftLog.applied = e.Index
 			}
 			fmt.Printf("%d apply message\n", rf.me)
 			rf.maybeChange()
 		}
-		//fmt.Printf("%d handleAppendReply end\n", rf.me)
 	}
 }
 
@@ -253,17 +239,11 @@ func (rf *Raft) applySnapshot(s *Snapshot) bool {
 	msg.CommandValid = false
 	msg.Snap = s
 	msg.LogIndex = s.Index
-	rf.mu.Unlock()
-	rf.dataMu.Lock()
 	if rf.raftLog.snapshot == nil || s.Index > rf.raftLog.snapshot.Index {
 		rf.applySM <- msg
 	} else {
-		rf.dataMu.Unlock()
-		rf.mu.Lock()
 		return false
 	}
-	rf.dataMu.Unlock()
-	rf.mu.Lock()
 	if !rf.raftLog.SetSnapshot(s) {
 		fmt.Printf("%d snapshot error, log size %d, snapshot index: %d, self snapshot index: %d\n",
 			rf.me, rf.raftLog.Size(), s.Index, rf.raftLog.snapshot.Index)

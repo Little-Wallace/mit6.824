@@ -1,5 +1,7 @@
 package raft
 
+import "fmt"
+
 type Entry struct {
 	//Data []byte
 	Data interface{}
@@ -37,7 +39,8 @@ func (log* UnstableLog) SetSnapshot(snapshot *Snapshot) bool {
 	}
 	var entries []Entry
 	if log.size - prevIndex > 0 {
-		entries = log.Entries[:log.size - prevIndex]
+		entries = make([]Entry, log.size - prevIndex)
+		copy(entries, log.Entries[:log.size - prevIndex])
 	}
 	log.snapshot = snapshot
 	log.size = snapshot.Index + 1
@@ -47,11 +50,17 @@ func (log* UnstableLog) SetSnapshot(snapshot *Snapshot) bool {
 	if log.applied < snapshot.Index {
 		log.applied = snapshot.Index
 	}
+	prevLogIndex := snapshot.Index
 	for _, e := range entries {
 		if e.Index <= log.snapshot.Index {
 			continue
 		}
 		log.Append(e)
+		if log.GetLastIndex() != prevLogIndex + 1 {
+			fmt.Printf("_______entry index: %d, last index: %d, previndex: %d\n", e.Index, log.GetLastIndex(), prevLogIndex)
+			panic("Snapshot error")
+		}
+		prevLogIndex = log.GetLastIndex()
 	}
 	return true
 }
@@ -80,6 +89,10 @@ func (log *UnstableLog) GetEntry(idx int) *Entry {
 			return &Entry{nil, log.snapshot.Term, log.snapshot.Index, log.snapshot.DataIndex}
 		}
 	}
+	if idx - prevSize < 0 || idx - prevSize >= len(log.Entries) {
+		fmt.Printf("__________GetEntry index: %d, prevSize: %d, len of entries: %d\n", idx, prevSize, len(log.Entries))
+		panic("out of range")
+	}
 	return &log.Entries[idx - prevSize]
 }
 
@@ -100,22 +113,27 @@ func (log *UnstableLog) Append(e Entry) {
 	if log.snapshot != nil {
 		idx -= log.snapshot.Index + 1
 	}
-	//if idx > len(log.Entries) {
-	//	fmt.Printf("Append an error entry, which index is %d, idx is %d, bigger than last index: %d, when snapshot index is %d\n",
-	//		e.Index, idx, log.Entries[len(log.Entries) - 1].Index, log.snapshot.Index)
-	//	panic("===APPEND ERROR==========")
-	//}
+	if idx > len(log.Entries) {
+		fmt.Printf("Append an error entry, which index is %d, idx is %d, bigger than last index: %d, when snapshot index is %d\n",
+			e.Index, idx, log.Entries[len(log.Entries) - 1].Index, log.snapshot.Index)
+		panic("===APPEND ERROR==========")
+	}
 	if idx >= len(log.Entries) {
 		log.Entries = append(log.Entries, e)
 	} else {
 		log.Entries[idx] = e
 	}
-	//if idx > 0 && e.Index != log.Entries[idx - 1].Index + 1 {
-	//	fmt.Printf("append error, append entry {%d} in %d,which prev entry index is %d. snapshot index is %d\n",
-	//		e.Index, idx, log.Entries[idx - 1].Index, log.snapshot.Index)
-	//	panic("===APPEND ERROR==========")
-	//}
+	if idx > 0 && e.Index != log.Entries[idx - 1].Index + 1 {
+		fmt.Printf("append error, append entry {%d} in %d,which prev entry index is %d. snapshot index is %d\n",
+			e.Index, idx, log.Entries[idx - 1].Index, log.snapshot.Index)
+		panic("===APPEND ERROR==========")
+	}
 	log.size = e.Index + 1
+	if log.snapshot == nil && log.size > len(log.Entries) {
+		fmt.Printf("append error, append entry {%d} in %d,which log size is %d, entries len: %d\n",
+			e.Index, idx, log.size, len(log.Entries))
+		panic("===APPEND ERROR==========")
+	}
 }
 
 func (log *UnstableLog) FindConflict(entries []Entry) int {
@@ -143,6 +161,9 @@ func (log *UnstableLog) GetUnApplyEntry() []Entry {
 	if log.snapshot != nil {
 		prevSize = log.snapshot.Index + 1
 	}
+	if log.commited == log.applied {
+		return []Entry{}
+	}
 	entries := make([]Entry, log.commited - log.applied)
 	copy(entries, log.Entries[log.applied + 1 - prevSize : log.commited + 1 - prevSize])
 	return entries
@@ -153,7 +174,9 @@ func (log *UnstableLog) GetEntries(since int) []Entry {
 	if log.snapshot != nil {
 		prevSize = log.snapshot.Index + 1
 	}
-	return log.Entries[since - prevSize : log.size - prevSize]
+	entries := make([]Entry, log.size - since)
+	copy(entries, log.Entries[since - prevSize : log.size - prevSize])
+	return entries
 }
 
 func (log *UnstableLog) GetUnstableEntries() []Entry {

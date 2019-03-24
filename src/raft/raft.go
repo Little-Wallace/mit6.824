@@ -71,7 +71,6 @@ const (
 
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
-	dataMu        sync.Mutex          // Lock to protect shared access to apply
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -188,22 +187,16 @@ func (rf *Raft) recoverFromSnapshot(data []byte) {
 	msg.CommandValid = false
 	msg.Snap = s
 
-	rf.mu.Unlock()
-	rf.dataMu.Lock()
 	rf.applySM <- msg
-	rf.mu.Lock()
 	rf.raftLog.applied = s.Index
 	entries := rf.raftLog.GetUnApplyEntry()
 	for _, e := range entries {
 		m := rf.createApplyMsg(e)
 		if m.CommandValid {
-			rf.mu.Unlock()
 			rf.applySM <- m
-			rf.mu.Lock()
 		}
 		rf.raftLog.applied += 1
 	}
-	rf.dataMu.Unlock()
 	rf.mu.Unlock()
 	fmt.Printf("%d recover snapshot(%d) applied: %d, commit: %d, %d\n",
 		rf.me, len(s.Data), rf.raftLog.applied, rf.raftLog.commited, rf.raftLog.size)
@@ -380,13 +373,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 func (rf *Raft) CreateSnapshot(data []byte, index int) bool {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	fmt.Printf("%d create snapshot which index to %d, snapshot size: %d, log size: %d, last index %d, applied: %d, commit: %d\n",
 		rf.me, index, len(data),rf.raftLog.Size(), rf.raftLog.GetLastIndex(), rf.raftLog.applied, rf.raftLog.commited)
+	if rf.raftLog.snapshot != nil && rf.raftLog.snapshot.Index >= index {
+		return true
+	}
 	term := rf.raftLog.GetEntry(index).Term
 	s := &Snapshot{index, rf.raftLog.GetEntry(index).DataIndex, term, data}
 	rf.raftLog.SetSnapshot(s)
 	rf.persister.SaveStateAndSnapshot(rf.getRaftStateData(), s.Bytes())
-	rf.mu.Unlock()
 	return true
 }
 
@@ -677,8 +673,8 @@ func (rf *Raft) tick() {
 	} else {
 		rf.tick_follower()
 	}
-	rf.mu.Unlock()
 	rf.maybeChange()
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) tick_leader() {
