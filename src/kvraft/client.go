@@ -34,7 +34,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.idx = uint64(nrand() % 10000 + 1) * 1000000
 	ck.leader = 0
 	ck.addrs = make([]int, len(servers) + 1)
-	for idx, _ := range(ck.addrs) {
+	for idx, _ := range ck.addrs {
 		ck.addrs[idx] = -1
 	}
 	// You'll have to add code here.
@@ -66,7 +66,9 @@ func (ck *Clerk) Get(key string) string {
 			continue
 		}
 		if reply.WrongLeader {
+			lastLeader := leader
 			leader = ck.getLeader(string(reply.Err), leader)
+			fmt.Printf("Get Key %s, wrongleader %d, change leader to %d\n", key, lastLeader, leader)
 		} else if reply.Err == ""{
 			return reply.Value
 		} else {
@@ -102,9 +104,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	leader := ck.leader
 	for ; ; {
 		var reply PutAppendReply
-		fmt.Printf("Put key %s to %d\n", key, leader)
+		//fmt.Printf("Put key %s to %d\n", key, leader)
 		if !ck.servers[leader].Call("KVServer.PutAppend", &args, &reply) {
-			fmt.Printf("Put key %s to %d failed\n", key, leader)
+			//fmt.Printf("Put key %s to %d failed\n", key, leader)
 			time.Sleep(time.Duration(20) * time.Millisecond)
 			leader = (leader + 1) % len(ck.servers)
 			continue
@@ -121,8 +123,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.mu.Lock()
 	ck.leader = leader
 	ck.mu.Unlock()
-
-	fmt.Printf("End Put key: %s\n", key)
+	fmt.Printf("End Put key: %s, idx: %d\n", key, args.Idx)
 }
 
 func (ck *Clerk) Put(key string, value string) {

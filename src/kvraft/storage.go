@@ -48,10 +48,11 @@ func (s *Storage) ApplySnapshot(snap *raft.Snapshot) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fmt.Printf("_recover map___%d_%d___%d\n", len(s.kv), size, len(snap.Data))
 	for i := 0; i < size; i += 2 {
 		s.kv[arrs[i]] = arrs[i + 1]
-		fmt.Printf("recover: kv[%s]=%s\n", arrs[i], arrs[i + 1])
+		if arrs[i] < "3" && len(arrs[i]) < 2 {
+			fmt.Printf("recover: kv[%s]=%s\n", arrs[i], arrs[i + 1])
+		}
 	}
 	return nil
 }

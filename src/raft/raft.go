@@ -71,6 +71,7 @@ const (
 
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	dataMu        sync.Mutex          // Lock to protect shared access to apply
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -181,44 +182,32 @@ func (rf *Raft) recoverFromSnapshot(data []byte) {
 		return
 	}
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	s := MakeSnapshot(data)
 	rf.raftLog.snapshot = s
 	var msg ApplyMsg
 	msg.CommandValid = false
 	msg.Snap = s
+
+	rf.mu.Unlock()
+	rf.dataMu.Lock()
 	rf.applySM <- msg
+	rf.mu.Lock()
 	rf.raftLog.applied = s.Index
 	entries := rf.raftLog.GetUnApplyEntry()
 	for _, e := range entries {
 		m := rf.createApplyMsg(e)
 		if m.CommandValid {
+			rf.mu.Unlock()
 			rf.applySM <- m
+			rf.mu.Lock()
 		}
 		rf.raftLog.applied += 1
 	}
+	rf.dataMu.Unlock()
+	rf.mu.Unlock()
 	fmt.Printf("%d recover snapshot(%d) applied: %d, commit: %d, %d\n",
 		rf.me, len(s.Data), rf.raftLog.applied, rf.raftLog.commited, rf.raftLog.size)
 }
-
-func (rf *Raft) applySnapshot(s *Snapshot) bool {
-	if s == nil {
-		return false
-	}
-	if !rf.raftLog.SetSnapshot(s) {
-		return false
-	}
-	fmt.Printf("%d apply snapshot from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
-	var msg ApplyMsg
-	msg.CommandValid = false
-	msg.Snap = s
-	msg.LogIndex = s.Index
-	rf.applySM <- msg
-	rf.persister.SaveStateAndSnapshot(rf.getRaftStateData(), s.Bytes())
-	fmt.Printf("%d end snapshot from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
-	return true
-}
-
 
 //
 // example RequestVote RPC arguments structure.
@@ -391,8 +380,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 func (rf *Raft) CreateSnapshot(data []byte, index int) bool {
 	rf.mu.Lock()
-	fmt.Printf("%d create snapshot which index to %d, snapshot size: %d, log size: %d, last index %d, unstable size: %d\n",
-		rf.me, index, len(data),rf.raftLog.Size(), rf.raftLog.GetLastIndex(), len(rf.raftLog.Entries))
+	fmt.Printf("%d create snapshot which index to %d, snapshot size: %d, log size: %d, last index %d, applied: %d, commit: %d\n",
+		rf.me, index, len(data),rf.raftLog.Size(), rf.raftLog.GetLastIndex(), rf.raftLog.applied, rf.raftLog.commited)
 	term := rf.raftLog.GetEntry(index).Term
 	s := &Snapshot{index, rf.raftLog.GetEntry(index).DataIndex, term, data}
 	rf.raftLog.SetSnapshot(s)
@@ -496,9 +485,10 @@ func (rf *Raft) Kill() {
 		}
 	}
 	fmt.Printf("Kill Raft %d, fail rpc: %d\n", rf.me, rf.failCount)
-	for ts := 1; atomic.LoadInt32(&rf.stop) != 2 && ts < 10; ts ++ {
-		time.Sleep(500 * time.Millisecond)
+	for ts := 1; atomic.LoadInt32(&rf.stop) != 2 && ts < 20; ts ++ {
+		time.Sleep(1000 * time.Millisecond)
 	}
+	fmt.Printf("Kill Raft %d result %d\n", rf.me, rf.stop)
 	delete(electionTimes, rf.rdElectionTimeout)
 }
 
@@ -623,7 +613,7 @@ func (rf *Raft) bcastHeartbeat(msg AppendMessage) {
 		if idx != rf.me {
 			msg.To = idx
 			msg.Commited = MinInt(pr.matched, rf.raftLog.commited)
-			fmt.Printf("%d: broadcast heartbeat to %d, commit to min(%d, %d)\n", rf.me, idx, pr.matched, rf.raftLog.commited)
+			//fmt.Printf("%d: broadcast heartbeat to %d, commit to min(%d, %d)\n", rf.me, idx, pr.matched, rf.raftLog.commited)
 			rf.clients[msg.To].AppendAsync(&msg)
 		}
 	}
@@ -639,7 +629,7 @@ func (rf *Raft) maybeLose() {
 			succeed ++
 			rf.clients[idx].active = false
 		} else {
-			fmt.Printf("%d lose contact of %d.\n", rf.me, idx)
+			//fmt.Printf("%d lose contact of %d.\n", rf.me, idx)
 		}
 	}
 	if succeed <= len(rf.clients) / 2 {
@@ -786,6 +776,5 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 
 	go rf.step()
-	fmt.Printf("%d : random election timeout: %d\n", rf.me, rf.rdElectionTimeout)
 	return rf
 }

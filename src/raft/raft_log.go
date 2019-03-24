@@ -1,7 +1,5 @@
 package raft
 
-import "fmt"
-
 type Entry struct {
 	//Data []byte
 	Data interface{}
@@ -102,11 +100,21 @@ func (log *UnstableLog) Append(e Entry) {
 	if log.snapshot != nil {
 		idx -= log.snapshot.Index + 1
 	}
+	//if idx > len(log.Entries) {
+	//	fmt.Printf("Append an error entry, which index is %d, idx is %d, bigger than last index: %d, when snapshot index is %d\n",
+	//		e.Index, idx, log.Entries[len(log.Entries) - 1].Index, log.snapshot.Index)
+	//	panic("===APPEND ERROR==========")
+	//}
 	if idx >= len(log.Entries) {
 		log.Entries = append(log.Entries, e)
 	} else {
 		log.Entries[idx] = e
 	}
+	//if idx > 0 && e.Index != log.Entries[idx - 1].Index + 1 {
+	//	fmt.Printf("append error, append entry {%d} in %d,which prev entry index is %d. snapshot index is %d\n",
+	//		e.Index, idx, log.Entries[idx - 1].Index, log.snapshot.Index)
+	//	panic("===APPEND ERROR==========")
+	//}
 	log.size = e.Index + 1
 }
 
@@ -125,8 +133,8 @@ func (log *UnstableLog) IsUpToDate(Index int, Term int) bool {
 	if Term > log.GetLastTerm() || (Term == log.GetLastTerm() && Index >= log.GetLastIndex()) {
 		ans = true
 	}
-	fmt.Printf("len: %d, term: %d, last term: %d, index: %d, lastIndex: %d, result: %t\n", len(log.Entries), Term, log.GetLastTerm(),
-		Index, log.GetLastIndex(), ans)
+	//fmt.Printf("len: %d, term: %d, last term: %d, index: %d, lastIndex: %d, result: %t\n", len(log.Entries), Term, log.GetLastTerm(),
+	//	Index, log.GetLastIndex(), ans)
 	return ans
 }
 
@@ -134,10 +142,10 @@ func (log *UnstableLog) GetUnApplyEntry() []Entry {
 	prevSize := 0
 	if log.snapshot != nil {
 		prevSize = log.snapshot.Index + 1
-		//fmt.Printf("============Error=======log size %d, apply %d, commit %d, snapshot size: %d, unstable size: %d\n",
-		//	log.size, log.applied, log.commited, prevSize, len(log.Entries))
 	}
-	return log.Entries[log.applied + 1 - prevSize : log.commited + 1 - prevSize]
+	entries := make([]Entry, log.commited - log.applied)
+	copy(entries, log.Entries[log.applied + 1 - prevSize : log.commited + 1 - prevSize])
+	return entries
 }
 
 func (log *UnstableLog) GetEntries(since int) []Entry {

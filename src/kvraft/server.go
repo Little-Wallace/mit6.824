@@ -52,13 +52,13 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	op.OpType = "Get"
 	op.Idx = 0
 	index, _, ret := kv.rf.Start(op);
-	fmt.Printf("Get a key %s in index: %d\n", args.Key, index)
+	//fmt.Printf("Get a key %s in index: %d\n", args.Key, index)
 	if !ret {
 		reply.WrongLeader = true
 		reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
 		return
 	}
-	fmt.Printf("Receive a Get operation, key: %s, idx: %d\n", args.Key, args.Idx)
+	fmt.Printf("Receive a Get operation, key: %s, idx: %d, index: %d\n", args.Key, args.Idx, index)
 	for ; kv.rf.IsLeader(); {
 		if kv.dataIndex >= int32(index) {
 			reply.WrongLeader = false
@@ -69,6 +69,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		}
 		time.Sleep(time.Duration(40) * time.Millisecond)
 	}
+	fmt.Printf("Failed to get key: %s, idx: %d, index: %d\n", args.Key, args.Idx, index)
 	reply.WrongLeader = true
 	reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
 }
@@ -82,15 +83,15 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		fmt.Printf("_______________replicate command key: %s, value: %s\n", args.Key, args.Value)
 		return
 	}
-	fmt.Printf("Begin PutAppend key to %d : key %s, value: %s, type: %s\n", kv.me, args.Key, args.Value, args.Op)
+	//fmt.Printf("Begin PutAppend key to %d : key %s, value: %s, type: %s\n", kv.me, args.Key, args.Value, args.Op)
 	if !kv.rf.IsLeader() {
 		reply.WrongLeader = true
 		reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
-		fmt.Printf("%d is not leader, leader is %d\n", kv.me, kv.rf.GetLeader())
+		//fmt.Printf("%d is not leader, leader is %d\n", kv.me, kv.rf.GetLeader())
 	} else {
 		kv.appendValue(args, reply)
 	}
-	fmt.Printf("Finish a %s operation, key: %s, value: %s, Idx: %d\n", args.Op, args.Key, args.Value, args.Idx)
+	//fmt.Printf("Finish a %s operation, key: %s, value: %s, Idx: %d\n", args.Op, args.Key, args.Value, args.Idx)
 }
 
 //
@@ -102,14 +103,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) Kill() {
 	kv.rf.Kill()
 	atomic.StoreInt32(&kv.stop, 1)
-	var msg raft.ApplyMsg
-	var op Op
-	op.OpType = "stop"
-	msg.Command = op
-	msg.CommandValid = true
-	//kv.applyCh <- msg
 	for atomic.LoadInt32(&kv.stop) != 2 {
-		time.Sleep(time.Duration(10) * time.Millisecond)
+		time.Sleep(time.Duration(500) * time.Millisecond)
 	}
 	// Your code here, if desired.
 }
@@ -155,12 +150,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 func (kv *KVServer) applySnapshot(s *raft.Snapshot) {
 	kv.mu.Lock()
+	fmt.Printf("===begin %d Apply a snapshot in index: %d\n", kv.me, s.Index)
 	if e := kv.storage.ApplySnapshot(s); e != nil {
 		fmt.Printf("%d apply error: %s\n", kv.me, e.Error())
 		panic("Apply Error")
 	}
 	kv.dataIndex = int32(s.DataIndex)
-	fmt.Printf("%d Apply a snapshot in index: %d\n", kv.me, s.Index)
+	fmt.Printf("===end %d Apply a snapshot in index: %d\n", kv.me, s.Index)
 	kv.mu.Unlock()
 }
 
@@ -184,7 +180,6 @@ func (kv *KVServer) applyMsgFromRaft(index int32,  op* Op) {
 }
 
 func (kv *KVServer) startApplyMsgThread() {
-	lastIndex := -1
 	for atomic.LoadInt32(&kv.stop) == 0 {
 		select {
 		case msg := <-kv.applyCh : {
@@ -195,23 +190,18 @@ func (kv *KVServer) startApplyMsgThread() {
 				break
 			}
 			data := msg.Command.(Op)
-			if data.OpType == "stop" {
-				break
-			}
 			kv.applyMsgFromRaft(int32(msg.CommandIndex), &data)
-			lastIndex = msg.LogIndex
-		}
-		case <-time.After(time.Duration(10) * time.Millisecond) : {
-			if kv.stop != 0 || kv.maxraftstate == -1 {
-				break
-			}
-			if lastIndex != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
 				fmt.Printf("=========================%d: raft size: %d, maxraftsize: %d, kv[0]=%s\n",
 					kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, kv.storage.Get("0"))
-				if !kv.rf.CreateSnapshot(kv.storage.Bytes(), lastIndex) {
-					fmt.Printf("Apply Error\n")
+				if !kv.rf.CreateSnapshot(kv.storage.Bytes(), msg.LogIndex) {
+					fmt.Printf("%d Apply Error from apply channel\n", kv.me)
+					panic("panic APPLY ERROR")
 				}
 			}
+		}
+		case <-time.After(time.Duration(500) * time.Millisecond) : {
+			break
 		}
 		}
 	}
@@ -230,26 +220,26 @@ func (kv *KVServer) appendValue(args *PutAppendArgs, reply *PutAppendReply) bool
 	if !ret {
 		reply.WrongLeader = true
 		reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
-		fmt.Printf("Put a key %s to error server. leader is %d\n", args.Key, kv.rf.GetLeader())
+		//fmt.Printf("Put a key %s to error server. leader is %d\n", args.Key, kv.rf.GetLeader())
 		return false
 	}
 	//kv.mu.Lock()
 	//kv.commands[args.Idx] = time.Now()
 	//kv.mu.Unlock()
-	fmt.Printf("%s a value %s to key %s in index: %d\n", args.Op, args.Value, args.Key, index)
+	//fmt.Printf("%s a value %s to key %s in index: %d\n", args.Op, args.Value, args.Key, index)
 	for ; kv.rf.IsLeader(); {
 		if atomic.LoadInt32(&kv.dataIndex) >= int32(index) {
 			reply.WrongLeader = false
 			reply.Err = ""
 			return true
 		}
-		kv.rf.DebugLog()
-		fmt.Printf("%d max apply data index: %d\n", kv.me, kv.dataIndex)
-		time.Sleep(time.Duration(40) * time.Millisecond)
+		//kv.rf.DebugLog()
+		//fmt.Printf("%d max apply data index: %d\n", kv.me, kv.dataIndex)
+		time.Sleep(time.Duration(200) * time.Millisecond)
 	}
 	reply.WrongLeader = true
 	reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
-	fmt.Printf("%d is not leader. Stop Wait\n", kv.me)
+	//fmt.Printf("%d is not leader. Stop Wait\n", kv.me)
 	return true
 }
 
