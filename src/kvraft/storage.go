@@ -6,7 +6,6 @@ import (
 	"raft"
 	"bytes"
 	"labgob"
-	"fmt"
 )
 
 type Storage struct {
@@ -43,7 +42,7 @@ func (s *Storage) ApplySnapshot(snap *raft.Snapshot) error {
 	d.Decode(&size)
 	arrs := make([]string, size)
 	if err := d.Decode(&arrs); err != nil {
-		fmt.Printf("recover failed\n")
+		DPrintf("recover failed\n")
 		return err
 	}
 	var ts []uint64
@@ -53,12 +52,12 @@ func (s *Storage) ApplySnapshot(snap *raft.Snapshot) error {
 	for i := 0; i < size; i += 2 {
 		s.kv[arrs[i]] = arrs[i + 1]
 		if arrs[i] < "3" && len(arrs[i]) <= 2 {
-			fmt.Printf("recover: kv[%s]=%s\n", arrs[i], arrs[i + 1])
+			DPrintf("recover: kv[%s]=%s\n", arrs[i], arrs[i + 1])
 		}
 	}
 	for _, k := range ts {
 		s.commands[k] = time.Now()
-		//fmt.Printf("recover: commands[%d]\n", k)
+		//DPrintf("recover: commands[%d]\n", k)
 	}
 	return nil
 }
@@ -73,24 +72,24 @@ func (s *Storage) Bytes() []byte {
 		arrs[size] = v
 		size ++
 		if k < "3" && len(k) <= 2 {
-			fmt.Printf("store: kv[%s]=%s\n", k, v)
+			DPrintf("store: kv[%s]=%s\n", k, v)
 		}
 	}
-	fmt.Printf("store a map , size : %d, arra len: %d, size: %d\n", len(s.kv), len(arrs), size)
-	s.mu.Unlock()
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	e.Encode(size)
-	e.Encode(arrs)
+	DPrintf("store a map , size : %d, arra len: %d, size: %d\n", len(s.kv), len(arrs), size)
 	now := time.Now()
 	ts := make([]uint64, 0)
 	for k, v := range s.commands {
 		if now.Sub(v).Seconds() > 20 {
 			continue
 		}
-		//fmt.Printf("store: commands[%d]\n", k)
+		//DPrintf("store: commands[%d]\n", k)
 		ts = append(ts, k)
 	}
+	s.mu.Unlock()
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(size)
+	e.Encode(arrs)
 	e.Encode(ts)
 	return w.Bytes()
 }
@@ -99,12 +98,13 @@ func (s *Storage) Put(idx uint64, key string, value string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok :=	s.commands[idx]; ok {
-		fmt.Printf("skip put key: %s, value: %s, idx: %d\n", key, value, idx)
+		DPrintf("skip put key: %s, value: %s, idx: %d\n", key, value, idx)
 		return
 	}
 	now := time.Now()
 	s.kv[key] = value
 	s.commands[idx] = now
-	delete(s.commands, idx - 100)
+	delete(s.commands, idx - 1)
+	delete(s.commands, idx - 2)
 }
 

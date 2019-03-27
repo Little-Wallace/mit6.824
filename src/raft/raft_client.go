@@ -3,8 +3,8 @@ package raft
 import (
 	"labrpc"
 	"time"
-	"fmt"
 	"sync/atomic"
+	"fmt"
 )
 
 type RaftClient struct {
@@ -44,12 +44,13 @@ func (cl *RaftClient) sendSnapshot(msg AppendMessage) bool {
 	ok := cl.peer.Call("Raft.AppendEntries", &msg, &reply)
 	for !ok && atomic.LoadInt32(&cl.stop) == 0 &&
 		atomic.LoadInt32(&cl.pendingSnapshot) == int32(msg.Snap.Index) {
+		fmt.Printf("send AppendSnapshot failed from %d to %d, try again\n", msg.From, msg.To)
 		ok = cl.peer.Call("Raft.AppendEntries", &msg, &reply)
 		//time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 	calcRuntime(start, "send AppendSnapshot")
 	if ok && atomic.LoadInt32(&cl.stop) == 0 {
-		fmt.Printf("send append msg success from %d to %d\n", msg.From, msg.To)
+		DebugPrint("send append msg success from %d to %d\n", msg.From, msg.To)
 		cl.raft.msgChan <- reply
 	}
 	return ok
@@ -65,7 +66,7 @@ func (cl *RaftClient) sendAppendEntries(msg AppendMessage) bool {
 	}
 	//calcRuntime(start, "sendAppendEntries")
 	if ok && atomic.LoadInt32(&cl.stop) == 0 {
-		//fmt.Printf("send append msg success from %d to %d\n", msg.From, msg.To)
+		//DebugPrint("send append msg success from %d to %d\n", msg.From, msg.To)
 		cl.raft.msgChan <- reply
 	}
 	return ok
@@ -79,14 +80,14 @@ func (cl *RaftClient) sendRequestVote(args RequestVoteArgs) bool {
 	} else {
 		reply.MsgType = MsgRequestVoteReply
 	}
-	//fmt.Printf("begin send request vote from %d to %d \n", args.From, args.To)
+	//DebugPrint("begin send request vote from %d to %d \n", args.From, args.To)
 	ok := cl.peer.Call("Raft.RequestVote", &args, &reply)
 	//calcRuntime(start, "sendRequestVote")
 	reply.To = args.To
 	if ok && atomic.LoadInt32(&cl.stop) == 0 {
 		cl.raft.voteChan <- reply
 	} else {
-		fmt.Printf("send request vote from %d to %d, failed %v, %d\n", args.From, args.To, ok, atomic.LoadInt32(&cl.stop))
+		DebugPrint("send request vote from %d to %d, failed %v, %d\n", args.From, args.To, ok, atomic.LoadInt32(&cl.stop))
 	}
 	return ok
 }
@@ -100,7 +101,7 @@ func (cl *RaftClient) AppendAsync(msg *AppendMessage) {
 	} else if msg.MsgType == MsgSnapshot {
 		idx := int32(msg.Snap.Index)
 		if idx <= atomic.LoadInt32(&cl.pendingSnapshot) {
-			fmt.Printf("skip snapshot %d, because there is a bigger one: %d\n", idx, atomic.LoadInt32(&cl.pendingSnapshot))
+			DebugPrint("skip snapshot %d, because there is a bigger one: %d\n", idx, atomic.LoadInt32(&cl.pendingSnapshot))
 			return
 		}
 		atomic.StoreInt32(&cl.pendingSnapshot, idx)

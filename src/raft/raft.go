@@ -22,9 +22,9 @@ import (
 	"labrpc"
 	"time"
 	"bytes"
-	"fmt"
 	"labgob"
 	"sync/atomic"
+	"fmt"
 )
 // import "bytes"
 // import "labgob"
@@ -50,6 +50,13 @@ type ApplyMsg struct {
 	Snap *Snapshot
 }
 
+var debugMode = true
+
+func DebugPrint(format string, a ...interface{}) {
+	if debugMode {
+		fmt.Printf(format, a...)
+	}
+}
 
 //
 // A Go object implementing a single Raft peer.
@@ -122,7 +129,7 @@ func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("%d Get term: %d,  state: %d\n", rf.me, rf.term, rf.state)
+	DebugPrint("%d Get term: %d,  state: %d\n", rf.me, rf.term, rf.state)
     return rf.term, rf.state == Leader
 }
 
@@ -131,9 +138,9 @@ func (rf *Raft) GetLeader() int {
 }
 
 func (rf *Raft) DebugLog() {
-	fmt.Printf("=======%d, log size: %d, commit: %d, applied: %d\n",
+	DebugPrint("=======%d, log size: %d, commit: %d, applied: %d\n",
 		rf.me, rf.raftLog.Size(), rf.raftLog.commited, rf.raftLog.applied)
-	fmt.Printf("=======%d,  state: %d, leader: %d, term: %d\n",
+	DebugPrint("=======%d,  state: %d, leader: %d, term: %d\n",
 		rf.me, rf.state, rf.leader, rf.term)
 }
 
@@ -144,7 +151,7 @@ func (rf *Raft) DebugLog() {
 //
 func (rf *Raft) persist() {
 	rf.persister.SaveRaftState(rf.getRaftStateData())
-	fmt.Printf("%d save to %d, %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited, rf.raftLog.size)
+	DebugPrint("%d save to %d, %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited, rf.raftLog.size)
 }
 
 
@@ -173,7 +180,7 @@ func (rf *Raft) recoverFromPersist(data []byte) {
 	d.Decode(&rf.raftLog.size)
 	d.Decode(&rf.raftLog.Entries)
 	rf.raftLog.applied = 0
-	fmt.Printf("%d recover from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
+	DebugPrint("%d recover from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
 }
 
 func (rf *Raft) recoverFromSnapshot(data []byte) {
@@ -198,7 +205,7 @@ func (rf *Raft) recoverFromSnapshot(data []byte) {
 		rf.raftLog.applied += 1
 	}
 	rf.mu.Unlock()
-	fmt.Printf("%d recover snapshot(%d) applied: %d, commit: %d, %d\n",
+	DebugPrint("%d recover snapshot(%d) applied: %d, commit: %d, %d\n",
 		rf.me, len(s.Data), rf.raftLog.applied, rf.raftLog.commited, rf.raftLog.size)
 }
 
@@ -213,27 +220,27 @@ func (rf *Raft) recoverFromSnapshot(data []byte) {
 //
 func calcRuntime(t time.Time, f string) {
 	now := time.Now()
-	fmt.Printf("%s cost %f millisecond\n", f, now.Sub(t).Seconds() * 1000)
+	DebugPrint("%s cost %f millisecond\n", f, now.Sub(t).Seconds() * 1000)
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	start := time.Now()
 	defer calcRuntime(start, "RequestVote")
-	fmt.Printf("%d(%d) AccessRequest(%s) vote from %d(%d)\n", rf.me, rf.term, getMsgName(args.MsgType), args.From, args.Term)
+	DebugPrint("%d(%d) AccessRequest(%s) vote from %d(%d)\n", rf.me, rf.term, getMsgName(args.MsgType), args.From, args.Term)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.maybeChange()
 	reply.To = rf.me
 	if !rf.checkVote(args.From, args.Term, args.MsgType, &reply.VoteGranted) || rf.state == Leader {
 		reply.Term = rf.term
-		fmt.Printf("%d %d reject smaller term: %d\n", rf.me, rf.term, args.Term)
+		DebugPrint("%d %d reject smaller term: %d\n", rf.me, rf.term, args.Term)
 		return
 	}
 	if ((rf.leader == -1 && rf.vote == -1) || rf.vote == args.From ||
 		(args.MsgType == MsgRequestPrevote && rf.term < args.Term)) &&
 		rf.raftLog.IsUpToDate(args.LastLogIndex, args.LastLogTerm) {
-		fmt.Printf("%d (leader:%d, vote: %d, state: %d) agree vote for: %d\n", rf.me, rf.leader,
+		DebugPrint("%d (leader:%d, vote: %d, state: %d) agree vote for: %d\n", rf.me, rf.leader,
 			rf.vote, rf.state, args.From)
 		reply.VoteGranted = true
 		reply.Term = args.Term
@@ -243,7 +250,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 		return
 	}
-	fmt.Printf("%d reject vote for: %d, leader: %d, vote: %d\n", rf.me, args.From, rf.leader, rf.vote)
+	DebugPrint("%d reject vote for: %d, leader: %d, vote: %d\n", rf.me, args.From, rf.leader, rf.vote)
 	reply.VoteGranted = false
 	reply.Term = rf.term
 }
@@ -295,7 +302,7 @@ func getResponseType(msg MessageType) MessageType {
 
 
 func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
-	fmt.Printf("%d(%d): receive vote reply from %d(%d), state: %d\n",
+	DebugPrint("%d(%d): receive vote reply from %d(%d), state: %d\n",
 		rf.me, rf.term, reply.To, reply.Term, rf.state)
 	start := time.Now()
 	defer calcRuntime(start, "handleVoteReply")
@@ -304,7 +311,7 @@ func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
 	}
 	if (rf.state == Candidate && reply.MsgType == MsgRequestVoteReply) ||
 		(rf.state == PreCandidate && reply.MsgType == MsgRequestPrevoteReply) {
-		fmt.Printf("%d(%d): access vote reply from %d(%d), accept: %t, state: %d\n",
+		DebugPrint("%d(%d): access vote reply from %d(%d), accept: %t, state: %d\n",
 			rf.me, rf.term, reply.To, reply.Term, reply.VoteGranted, rf.state)
 		if reply.VoteGranted {
 			rf.votes[reply.To] = 1
@@ -324,24 +331,24 @@ func (rf *Raft) handleVoteReply(reply* RequestVoteReply) {
 		if accept >= quorum {
 			for idx, v := range rf.votes {
 				if v == 1 {
-					fmt.Printf("%d vote for me(%d).\n", idx, rf.me)
+					DebugPrint("%d vote for me(%d).\n", idx, rf.me)
 				}
 			}
-			fmt.Printf("%d win.\n", rf.me)
+			DebugPrint("%d win.\n", rf.me)
 			if rf.state == PreCandidate {
-				fmt.Printf("%d win prevote\n", rf.me)
+				DebugPrint("%d win prevote\n", rf.me)
 				rf.campaign(MsgRequestVote)
 			} else {
-				fmt.Printf("%d win vote\n", rf.me)
+				DebugPrint("%d win vote\n", rf.me)
 				rf.becomeLeader()
 				rf.propose(nil, rf.raftLog.GetDataIndex())
 			}
 		} else if reject == quorum {
-			fmt.Printf("%d has been reject by %d members\n", rf.me, reject)
+			DebugPrint("%d has been reject by %d members\n", rf.me, reject)
 			rf.becomeFollower(rf.term, -1)
 		}
 	}
-	fmt.Printf("%d(%d): receive vote end\n", rf.me, rf.term)
+	DebugPrint("%d(%d): receive vote end\n", rf.me, rf.term)
 }
 
 //
@@ -364,7 +371,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.mu.Lock()
 	index := rf.raftLog.GetDataIndex() + 1
-	fmt.Printf("%d Store a message, at index: %d, term: %d\n",
+	DebugPrint("%d Store a message, at index: %d, term: %d\n",
 		rf.me, index, rf.term)
 	rf.propose(command, index)
 	rf.mu.Unlock()
@@ -374,7 +381,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) CreateSnapshot(data []byte, index int) bool {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("%d create snapshot which index to %d, snapshot size: %d, log size: %d, last index %d, applied: %d, commit: %d\n",
+	DebugPrint("%d create snapshot which index to %d, snapshot size: %d, log size: %d, last index %d, applied: %d, commit: %d\n",
 		rf.me, index, len(data),rf.raftLog.Size(), rf.raftLog.GetLastIndex(), rf.raftLog.applied, rf.raftLog.commited)
 	if rf.raftLog.snapshot != nil && rf.raftLog.snapshot.Index >= index {
 		return true
@@ -393,12 +400,12 @@ func (rf *Raft) createApplyMsg(e Entry) ApplyMsg {
 		applyMsg.LogIndex = e.Index
 		applyMsg.Command = e.Data
 		applyMsg.CommandValid = true
-		//fmt.Printf("%d Apply entre : term: %d, index: %d, value : %d\n", rf.me, e.Term, applyMsg.CommandIndex, tmp)
+		//DebugPrint("%d Apply entre : term: %d, index: %d, value : %d\n", rf.me, e.Term, applyMsg.CommandIndex, tmp)
 	} else {
 		applyMsg.Command = -1
 		applyMsg.CommandValid = false
 		//applyMsg.CommandValid = false
-		fmt.Printf("%d empty Apply entre : term: %d, index: %d, value\n", rf.me, e.Term, e.Index)
+		DebugPrint("%d empty Apply entre : term: %d, index: %d, value\n", rf.me, e.Term, e.Index)
 	}
 	return applyMsg
 }
@@ -426,13 +433,13 @@ func (rf *Raft) appendMore(idx int) {
 		msg := rf.createMessage(idx, MsgSnapshot)
 		msg.Snap = *snap
 		msg.Commited = rf.raftLog.commited
-		fmt.Printf("%d send AppendSnapshot to %d since %d, which matched (%d, %d)\n",
+		DebugPrint("%d send AppendSnapshot to %d since %d, which matched (%d, %d)\n",
 			rf.me, idx, rf.clients[idx].next, rf.clients[idx].matched, rf.raftLog.commited)
 		rf.clients[idx].AppendAsync(&msg)
 	} else {
 		msg := rf.createMessage(idx, MsgAppend)
 		msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(rf.clients[idx].next)
-		fmt.Printf("%d send AppendEntries to %d since %d, which matched (%d, %d)\n",
+		DebugPrint("%d send AppendEntries to %d since %d, which matched (%d, %d)\n",
 			rf.me, idx, rf.clients[idx].next, rf.clients[idx].matched, rf.raftLog.commited)
 		msg.PrevLogTerm = rf.raftLog.GetEntry(msg.PrevLogIndex).Term
 		msg.Commited = rf.raftLog.commited
@@ -448,10 +455,10 @@ func (rf *Raft) checkVote(from int, term int, msgType MessageType, accept* bool)
 				*accept = false
 				return false
 			}
-			fmt.Printf("%d(%d, leader: %d) access a msg (%s) from %d, term:%d. when %v, since last heartbeat: %v\n",
+			DebugPrint("%d(%d, leader: %d) access a msg (%s) from %d, term:%d. when %v, since last heartbeat: %v\n",
 				rf.me, rf.leader, rf.term, getMsgName(msgType), from, term, t, rf.lastElection)
 		}
-		//fmt.Printf("%d(%d) receive a larger term(%d) from %d of %s, current leader: %d\n",
+		//DebugPrint("%d(%d) receive a larger term(%d) from %d of %s, current leader: %d\n",
 		//	rf.me, rf.term, term, from, getMsgName(msgType), rf.leader)
 		if msgType == MsgRequestPrevote || (msgType == MsgRequestPrevoteReply && *accept == true) {
 
@@ -480,11 +487,11 @@ func (rf *Raft) Kill() {
 			rf.clients[idx].Stop()
 		}
 	}
-	fmt.Printf("Kill Raft %d, fail rpc: %d\n", rf.me, rf.failCount)
+	DebugPrint("Kill Raft %d, fail rpc: %d\n", rf.me, rf.failCount)
 	for ts := 1; atomic.LoadInt32(&rf.stop) != 2 && ts < 20; ts ++ {
 		time.Sleep(1000 * time.Millisecond)
 	}
-	fmt.Printf("Kill Raft %d result %d\n", rf.me, rf.stop)
+	DebugPrint("Kill Raft %d result %d\n", rf.me, rf.stop)
 	delete(electionTimes, rf.rdElectionTimeout)
 }
 
@@ -504,7 +511,7 @@ func (rf *Raft) becomeFollower(term int, leader int) {
 	rf.reset(term)
 	rf.state = Follower
 	rf.leader = leader
-	fmt.Printf("%d become follower of %d in term: %d\n", rf.me, leader, term)
+	DebugPrint("%d become follower of %d in term: %d\n", rf.me, leader, term)
 }
 
 func (rf *Raft) becomeLeader() {
@@ -519,7 +526,7 @@ func (rf *Raft) becomeLeader() {
 			pr.matched = 0
 		}
 	}
-	fmt.Printf("%d become leader at %d\n", rf.me, rf.term)
+	DebugPrint("%d become leader at %d\n", rf.me, rf.term)
 	//time.Sleep(10 * time.Millisecond)
 	rf.state = Leader
 	rf.leader = rf.me
@@ -538,7 +545,7 @@ func (rf *Raft) becomeCandidate(msgType MessageType) int {
 		rf.votes[rf.me] = 1
 		rf.vote = rf.me
 	}
-	fmt.Printf("%d become %s candidate, %v\n", rf.me, getMsgName(msgType), rf.lastElection)
+	DebugPrint("%d become %s candidate, %v\n", rf.me, getMsgName(msgType), rf.lastElection)
 	return term
 }
 
@@ -587,13 +594,13 @@ func (rf *Raft) propose(data interface{}, idx int) {
 }
 
 func (rf *Raft) broadcast() {
-	fmt.Printf("%d: BeginSend append entries\n", rf.me)
-	defer fmt.Printf("%d: EndSend append entries:\n", rf.me)
+	DebugPrint("%d: BeginSend append entries\n", rf.me)
+	defer DebugPrint("%d: EndSend append entries:\n", rf.me)
 	//msg := rf.createMessage(0, MsgAppend)
 	for id, pr := range rf.clients {
 		if id != int(rf.me) {
 			rf.appendMore(id)
-			fmt.Printf("%d: broadcast append to %d since %d\n", rf.me, id, pr.next)
+			DebugPrint("%d: broadcast append to %d since %d\n", rf.me, id, pr.next)
 			//msg.To = id
 			//msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(pr.next)
 			//msg.Commited = rf.raftLog.commited
@@ -609,7 +616,7 @@ func (rf *Raft) bcastHeartbeat(msg AppendMessage) {
 		if idx != rf.me {
 			msg.To = idx
 			msg.Commited = MinInt(pr.matched, rf.raftLog.commited)
-			//fmt.Printf("%d: broadcast heartbeat to %d, commit to min(%d, %d)\n", rf.me, idx, pr.matched, rf.raftLog.commited)
+			//DebugPrint("%d: broadcast heartbeat to %d, commit to min(%d, %d)\n", rf.me, idx, pr.matched, rf.raftLog.commited)
 			rf.clients[msg.To].AppendAsync(&msg)
 		}
 	}
@@ -625,7 +632,7 @@ func (rf *Raft) maybeLose() {
 			succeed ++
 			rf.clients[idx].active = false
 		} else {
-			//fmt.Printf("%d lose contact of %d.\n", rf.me, idx)
+			//DebugPrint("%d lose contact of %d.\n", rf.me, idx)
 		}
 	}
 	if succeed <= len(rf.clients) / 2 {
@@ -642,7 +649,7 @@ func (rf *Raft) maybeChange() {
 }
 
 func (rf *Raft) campaign(msgType MessageType) {
-	fmt.Printf("%d begin %s campagin at term:%d, state:%d, log len:%d\n", rf.me, getMsgName(msgType), rf.term, rf.state, len(rf.raftLog.Entries))
+	DebugPrint("%d begin %s campagin at term:%d, state:%d, log len:%d\n", rf.me, getMsgName(msgType), rf.term, rf.state, len(rf.raftLog.Entries))
 	term := rf.becomeCandidate(msgType)
 	rf.votes[rf.me] = 1
 	lastLogIndex := rf.raftLog.GetLastIndex()
@@ -727,7 +734,7 @@ func (rf *Raft) step() {
 		}
 		}
 	}
-	fmt.Printf("Stop Raft: %d\n", rf.me)
+	DebugPrint("Stop Raft: %d\n", rf.me)
 	atomic.StoreInt32(&rf.stop, 2)
 }
 
@@ -736,7 +743,7 @@ var electionTimes = make(map[int32]bool)
 
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	fmt.Printf("%d : start a Raft instance\n", me)
+	DebugPrint("%d : start a Raft instance\n", me)
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister

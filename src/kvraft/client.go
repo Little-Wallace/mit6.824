@@ -6,7 +6,6 @@ import (
 	"math/big"
 	"sync/atomic"
 	"time"
-	"fmt"
 	"sync"
 )
 
@@ -57,7 +56,7 @@ func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	var args GetArgs
 	args.Key = key
-	fmt.Printf("Begin Get key: %s\n", key)
+	DPrintf("Begin Get key: %s\n", key)
 	leader := ck.leader
 	for ; ; {
 		var reply GetReply
@@ -68,18 +67,18 @@ func (ck *Clerk) Get(key string) string {
 		if reply.WrongLeader {
 			//lastLeader := leader
 			leader = ck.getLeader(string(reply.Err), leader)
-			//fmt.Printf("Get Key %s, wrongleader %d, change leader to %d\n", key, lastLeader, leader)
+			//DPrintf("Get Key %s, wrongleader %d, change leader to %d\n", key, lastLeader, leader)
 		} else if reply.Err == ""{
 			return reply.Value
 		} else {
-			fmt.Printf("Error %s\n", reply.Err)
+			DPrintf("Error %s\n", reply.Err)
 		}
 	}
 
 	ck.mu.Lock()
 	ck.leader = leader
 	ck.mu.Unlock()
-	fmt.Printf("End Get key: %s\n", key)
+	DPrintf("End Get key: %s\n", key)
 	return ""
 }
 
@@ -100,30 +99,30 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Value = value
 	args.Op = op
 	args.Idx = atomic.AddUint64(&ck.idx, 1)
-	fmt.Printf("Begin %s key: %s, value: %s, idx: %d\n", op, key, value, args.Idx)
+	DPrintf("Begin %s key: %s, value: %s, idx: %d\n", op, key, value, args.Idx)
 	leader := ck.leader
 	for ; ; {
 		var reply PutAppendReply
-		//fmt.Printf("Put key %s to %d\n", key, leader)
+		//DPrintf("Put key %s to %d\n", key, leader)
 		if !ck.servers[leader].Call("KVServer.PutAppend", &args, &reply) {
-			//fmt.Printf("Put key %s to %d failed\n", key, leader)
+			//DPrintf("Put key %s to %d failed\n", key, leader)
 			time.Sleep(time.Duration(20) * time.Millisecond)
 			leader = (leader + 1) % len(ck.servers)
 			continue
 		}
 		if reply.WrongLeader {
 			leader = ck.getLeader(string(reply.Err), leader)
-			//fmt.Printf("Error %s, leader: %d, %d\n", reply.Err, leader, ck.leader)
+			//DPrintf("Error %s, leader: %d, %d\n", reply.Err, leader, ck.leader)
 		} else if reply.Err == "" {
 			break;
 		} else {
-			fmt.Printf("Error %s\n", reply.Err)
+			DPrintf("Error %s\n", reply.Err)
 		}
 	}
 	ck.mu.Lock()
 	ck.leader = leader
 	ck.mu.Unlock()
-	fmt.Printf("End Put key: %s, idx: %d\n", key, args.Idx)
+	DPrintf("End Put key: %s, idx: %d\n", key, args.Idx)
 }
 
 func (ck *Clerk) Put(key string, value string) {
