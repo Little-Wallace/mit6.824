@@ -30,12 +30,14 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	ck.idx = uint64(nrand() % 1000000 + 1) * 10000
+	ck.idx = uint64(nrand() % 1000000 + 1) * 10000 + uint64(time.Now().Second() * time.Now().Minute())
 	ck.leader = 0
 	ck.addrs = make([]int, len(servers) + 1)
 	for idx, _ := range ck.addrs {
 		ck.addrs[idx] = -1
 	}
+
+	DPrintf("Make Clerk %d\n", ck.idx)
 	// You'll have to add code here.
 	return ck
 }

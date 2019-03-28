@@ -63,7 +63,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			reply.WrongLeader = false
 			reply.Value = kv.storage.Get(args.Key)
 			reply.Err = ""
-			DPrintf("finish Get operation, key: %s, value: %s\n", args.Key, reply.Value)
+			DPrintf("%d finish Get operation, key: %s, value: %s\n", kv.me, args.Key, reply.Value)
 			return
 		}
 		time.Sleep(time.Duration(40) * time.Millisecond)
@@ -82,15 +82,15 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		DPrintf("_______________replicate command key: %s, value: %s\n", args.Key, args.Value)
 		return
 	}
-	//DPrintf("Begin PutAppend key to %d : key %s, value: %s, type: %s\n", kv.me, args.Key, args.Value, args.Op)
 	if !kv.rf.IsLeader() {
 		reply.WrongLeader = true
 		reply.Err = Err(WriteLeader(kv.me, kv.rf.GetLeader()))
 		//DPrintf("%d is not leader, leader is %d\n", kv.me, kv.rf.GetLeader())
 	} else {
+		DPrintf("Begin PutAppend key to %d : key %s, value: %s, type: %s\n", kv.me, args.Key, args.Value, args.Op)
 		kv.appendValue(args, reply)
+		DPrintf("%d Finish a %s operation, key: %s, value: %s, Idx: %d\n", kv.me, args.Op, args.Key, args.Value, args.Idx)
 	}
-	//DPrintf("Finish a %s operation, key: %s, value: %s, Idx: %d\n", args.Op, args.Key, args.Value, args.Idx)
 }
 
 //
