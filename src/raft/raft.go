@@ -179,8 +179,10 @@ func (rf *Raft) recoverFromPersist(data []byte) {
 	d.Decode(&rf.raftLog.commited)
 	d.Decode(&rf.raftLog.size)
 	d.Decode(&rf.raftLog.Entries)
+	rf.prevState = HardState{rf.term, rf.vote, rf.raftLog.commited, rf.raftLog.Size()}
 	rf.raftLog.applied = 0
-	DebugPrint("%d recover from %d, %d, %d\n", rf.me, rf.term, rf.vote, rf.raftLog.commited)
+	DebugPrint("%d recover from %d, %d, %d, %d\n",
+		rf.me, rf.term, rf.vote, rf.raftLog.commited, rf.raftLog.size)
 }
 
 func (rf *Raft) recoverFromSnapshot(data []byte) {
@@ -641,7 +643,7 @@ func (rf *Raft) maybeLose() {
 }
 
 func (rf *Raft) maybeChange() {
-	state := HardState{rf.term, rf.vote, rf.raftLog.commited}
+	state := HardState{rf.term, rf.vote, rf.raftLog.commited, rf.raftLog.Size()}
 	if state != rf.prevState{
 		rf.persist()
 		rf.prevState = state
@@ -753,7 +755,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		[]Entry{e},
 		0, 0, 1, nil,
 	}
-	rf.prevState = HardState{0, -1, 0}
+	rf.prevState = HardState{0, -1, 0, 1}
 	rf.term = 0
 	rf.vote = -1
 	rf.electionTimeout = 800

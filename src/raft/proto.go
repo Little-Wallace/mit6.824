@@ -64,6 +64,7 @@ type HardState struct {
 	term 		int
 	vote 		int
 	commited	int
+	size        int
 }
 
 type SnapshotMessage struct {

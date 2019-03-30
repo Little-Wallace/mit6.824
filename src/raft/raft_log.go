@@ -184,7 +184,10 @@ func (log *UnstableLog) GetUnstableEntries() []Entry {
 	if log.snapshot != nil {
 		prevSize = log.snapshot.Index + 1
 	}
-	return log.Entries[:log.size - prevSize]
+	sz := log.size - prevSize
+	entries := make([]Entry, sz)
+	copy(entries, log.Entries[: sz])
+	return entries
 }
 
 

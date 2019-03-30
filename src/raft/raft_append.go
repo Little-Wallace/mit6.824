@@ -41,10 +41,10 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 	}
 	if rf.raftLog.applied < rf.raftLog.commited {
 		entries := rf.raftLog.GetUnApplyEntry()
-		//if len(entries) > 0 {
-		//	DebugPrint("%d apply entries from %d to %d, which commited is %d, applied is %d\n",
-		//		rf.me, entries[0].Index,entries[len(entries) - 1].Index, rf.raftLog.commited, rf.raftLog.applied)
-		//}
+		if len(entries) > 0 {
+			DebugPrint("%d apply entries from %d to %d, which commited is %d, applied is %d\n",
+				rf.me, entries[0].Index,entries[len(entries) - 1].Index, rf.raftLog.commited, rf.raftLog.applied)
+		}
 		for _, e := range entries {
 			m := rf.createApplyMsg(e)
 			if m.CommandValid {
@@ -170,6 +170,10 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 				pr.matched = reply.Commited
 				pr.next = pr.matched + 1
 			}
+		} else if pr.matched < reply.Commited {
+			pr.matched = reply.Commited
+			pr.next = reply.Commited + 1
+			rf.appendMore(reply.From)
 		}
 		return
 	}
@@ -177,6 +181,7 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		//DebugPrint("%d(%d) handleAppendReply failed, from %d(%d). which matched %d\n",
 		//	rf.me, rf.raftLog.commited, reply.From, reply.Commited, pr.matched)
 		if reply.Commited + 1 < pr.next {
+		//if reply.Commited + 1 < pr.next && reply.Commited > pr.matched {
 			pr.next = reply.Commited + 1
 			rf.appendMore(reply.From)
 		}
@@ -202,10 +207,11 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		sort.Ints(commits)
 		quorum := len(rf.peers) / 2
 		//DebugPrint("%d receive a msg commit : %d from %d\n", rf.me, reply.Commited, reply.From)
-		//DebugPrint("%d commit %d, to commit %d, apply %d, all: %d\n",
-		//	rf.me, rf.raftLog.commited, commits[quorum], rf.raftLog.applied,
-		//	rf.raftLog.size)
+
 		if rf.raftLog.commited < commits[quorum] {
+			DebugPrint("%d commit %d, to commit %d, apply %d, all: %d\n",
+			rf.me, rf.raftLog.commited, commits[quorum], rf.raftLog.applied,
+				rf.raftLog.size)
 			rf.raftLog.commited = commits[quorum]
 			entries := rf.raftLog.GetUnApplyEntry()
 			for _, e := range entries {
