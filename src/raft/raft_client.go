@@ -104,6 +104,7 @@ func (cl *RaftClient) AppendAsync(msg *AppendMessage) {
 			DebugPrint("skip snapshot %d, because there is a bigger one: %d\n", idx, atomic.LoadInt32(&cl.pendingSnapshot))
 			return
 		}
+		cl.lastAppendTime = time.Now()
 		atomic.StoreInt32(&cl.pendingSnapshot, idx)
 		go cl.sendSnapshot(*msg)
 	}

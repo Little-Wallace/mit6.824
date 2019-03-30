@@ -41,6 +41,7 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 	stop    int32
 	dataIndex   int32
+	logIndex    int
 	storage  Storage
 	// Your definitions here.
 }
@@ -155,6 +156,7 @@ func (kv *KVServer) applySnapshot(s *raft.Snapshot) {
 		panic("Apply Error")
 	}
 	kv.dataIndex = int32(s.DataIndex)
+	kv.logIndex = s.Index
 	DPrintf("===end %d Apply a snapshot in index: %d\n", kv.me, s.Index)
 	kv.mu.Unlock()
 }
@@ -180,6 +182,11 @@ func (kv *KVServer) applyMsgFromRaft(index int32,  op* Op) {
 
 func (kv *KVServer) startApplyMsgThread() {
 	for atomic.LoadInt32(&kv.stop) == 0 {
+		if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+			DPrintf("=========================%d: raft size: %d, maxraftsize: %d, kv[0]=%s\n",
+				kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, kv.storage.Get("0"))
+			go kv.rf.CreateSnapshot(kv.storage.Bytes(), kv.logIndex, kv.maxraftstate)
+		}
 		select {
 		case msg := <-kv.applyCh : {
 			if msg.Snap != nil {
@@ -190,17 +197,9 @@ func (kv *KVServer) startApplyMsgThread() {
 			}
 			data := msg.Command.(Op)
 			kv.applyMsgFromRaft(int32(msg.CommandIndex), &data)
-			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate  {
-				DPrintf("=========================%d: raft size: %d, maxraftsize: %d, kv[0]=%s\n",
-					kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, kv.storage.Get("0"))
-				go kv.rf.CreateSnapshot(kv.storage.Bytes(), msg.LogIndex)
-				//if !kv.rf.CreateSnapshot(kv.storage.Bytes(), msg.LogIndex) {
-				//	DPrintf("%d Apply Error from apply channel\n", kv.me)
-				//	panic("panic APPLY ERROR")
-				//}
-			}
+			kv.logIndex = msg.LogIndex
 		}
-		case <-time.After(time.Duration(500) * time.Millisecond) : {
+		case <-time.After(time.Duration(200) * time.Millisecond) : {
 			break
 		}
 		}
@@ -208,7 +207,6 @@ func (kv *KVServer) startApplyMsgThread() {
 	atomic.StoreInt32(&kv.stop, 2)
 	// Your code here, if desired.
 }
-
 
 func (kv *KVServer) appendValue(args *PutAppendArgs, reply *PutAppendReply) bool {
 	var op Op

@@ -263,7 +263,7 @@ func getResponseType(msg MessageType) MessageType {
 	} else if msg == MsgHeartbeat {
 		return MsgHeartbeatReply
 	} else if msg == MsgSnapshot {
-		return MsgSnapshotReply
+		return MsgAppendReply
 	} else if msg == MsgRequestVote {
 		return MsgRequestVoteReply
 	} else if msg == MsgRequestPrevote {
@@ -380,19 +380,22 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, rf.term, true
 }
 
-func (rf *Raft) CreateSnapshot(data []byte, index int) bool {
+func (rf *Raft) CreateSnapshot(data []byte, index int, maxRaftState int)  {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	DebugPrint("%d create snapshot which index to %d, snapshot size: %d, log size: %d, last index %d, applied: %d, commit: %d\n",
 		rf.me, index, len(data),rf.raftLog.Size(), rf.raftLog.GetLastIndex(), rf.raftLog.applied, rf.raftLog.commited)
 	if rf.raftLog.snapshot != nil && rf.raftLog.snapshot.Index >= index {
-		return true
+		return
+	}
+	if rf.persister.RaftStateSize() < maxRaftState {
+		return
 	}
 	term := rf.raftLog.GetEntry(index).Term
 	s := &Snapshot{index, rf.raftLog.GetEntry(index).DataIndex, term, data}
 	rf.raftLog.SetSnapshot(s)
 	rf.persister.SaveStateAndSnapshot(rf.getRaftStateData(), s.Bytes())
-	return true
+	return
 }
 
 func (rf *Raft) createApplyMsg(e Entry) ApplyMsg {
@@ -438,7 +441,7 @@ func (rf *Raft) appendMore(idx int) {
 		DebugPrint("%d send AppendSnapshot to %d since %d, which matched (%d, %d)\n",
 			rf.me, idx, rf.clients[idx].next, rf.clients[idx].matched, rf.raftLog.commited)
 		rf.clients[idx].AppendAsync(&msg)
-	} else {
+	} else if rf.clients[idx].next <= rf.raftLog.GetLastIndex() {
 		msg := rf.createMessage(idx, MsgAppend)
 		msg.Entries, msg.PrevLogIndex = rf.getUnsendEntries(rf.clients[idx].next)
 		DebugPrint("%d send AppendEntries to %d since %d, which matched (%d, %d)\n",

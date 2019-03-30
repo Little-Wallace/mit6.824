@@ -71,7 +71,7 @@ func (rf *Raft) handleAppendSnapshot(args *AppendMessage, reply* AppendReply) {
 		DebugPrint("%d(%d) apply snapshot from %d(%d) success\n", rf.me, rf.raftLog.commited,
 			args.From, snap.Index)
 	} else {
-		reply.Success = false
+		reply.Success = true
 		reply.Commited = rf.raftLog.commited
 		reply.Term = args.Term
 		DebugPrint("%d(%d) apply snapshot from %d(%d) failed\n", rf.me, rf.raftLog.commited,
@@ -165,16 +165,7 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 	} else if reply.MsgType == MsgSnapshotReply {
 		DebugPrint("%d access Snapshot Reply from %d(matched: %d, %d)\n", rf.me, reply.From,
 			pr.matched, rf.raftLog.GetLastIndex())
-		if reply.Success {
-			if pr.matched < reply.Commited {
-				pr.matched = reply.Commited
-				pr.next = pr.matched + 1
-			}
-		} else if pr.matched < reply.Commited {
-			pr.matched = reply.Commited
-			pr.next = reply.Commited + 1
-			rf.appendMore(reply.From)
-		}
+		panic("NO MSGSNAPSHOTREPLY\n")
 		return
 	}
 	if !reply.Success {
@@ -228,6 +219,9 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 			}
 			DebugPrint("%d apply message\n", rf.me)
 			rf.maybeChange()
+		}
+		if pr.PassAppendTimeout() {
+			rf.appendMore(reply.From)
 		}
 	}
 }
