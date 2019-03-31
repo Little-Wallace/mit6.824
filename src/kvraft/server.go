@@ -41,6 +41,7 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 	stop    int32
 	dataIndex   int32
+	pendingSnapshot int32
 	logIndex    int
 	storage  Storage
 	// Your definitions here.
@@ -106,6 +107,10 @@ func (kv *KVServer) Kill() {
 	for atomic.LoadInt32(&kv.stop) != 2 {
 		time.Sleep(time.Duration(500) * time.Millisecond)
 	}
+	for !atomic.CompareAndSwapInt32(&kv.pendingSnapshot, 0, 1) {
+		DPrintf("kill while there is a pending snapshot\n")
+		time.Sleep(time.Second)
+	}
 	// Your code here, if desired.
 }
 
@@ -141,6 +146,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.storage.kv = make(map[string]string)
 	kv.storage.commands = make(map[uint64]time.Time)
 	kv.persister = persister
+	kv.pendingSnapshot = 0
 	go kv.startApplyMsgThread()
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	// You may need initialization code here.
@@ -180,12 +186,26 @@ func (kv *KVServer) applyMsgFromRaft(index int32,  op* Op) {
 	atomic.StoreInt32(&kv.dataIndex, index)
 }
 
+func (kv *KVServer) createSnapshot(data []byte, index int) {
+	if !atomic.CompareAndSwapInt32(&kv.pendingSnapshot, 0, 1) {
+		return
+	}
+	if kv.rf != nil {
+		kv.rf.CreateSnapshot(data, index, kv.maxraftstate)
+	}
+	for !atomic.CompareAndSwapInt32(&kv.pendingSnapshot, 1, 0) {
+		DPrintf("===============ATOMIC SET ERROR============\n")
+		time.Sleep(time.Duration(50) * time.Millisecond)
+	}
+}
+
 func (kv *KVServer) startApplyMsgThread() {
 	for atomic.LoadInt32(&kv.stop) == 0 {
-		if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+		if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate &&
+			atomic.LoadInt32(&kv.pendingSnapshot) == 0 {
 			DPrintf("=========================%d: raft size: %d, maxraftsize: %d, kv[0]=%s\n",
 				kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, kv.storage.Get("0"))
-			go kv.rf.CreateSnapshot(kv.storage.Bytes(), kv.logIndex, kv.maxraftstate)
+			go kv.createSnapshot(kv.storage.Bytes(), kv.logIndex)
 		}
 		select {
 		case msg := <-kv.applyCh : {

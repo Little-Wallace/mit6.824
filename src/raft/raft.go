@@ -388,7 +388,7 @@ func (rf *Raft) CreateSnapshot(data []byte, index int, maxRaftState int)  {
 	if rf.raftLog.snapshot != nil && rf.raftLog.snapshot.Index >= index {
 		return
 	}
-	if rf.persister.RaftStateSize() < maxRaftState {
+	if atomic.LoadInt32(&rf.stop) != 0 || rf.persister.RaftStateSize() < maxRaftState {
 		return
 	}
 	term := rf.raftLog.GetEntry(index).Term

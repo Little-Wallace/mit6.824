@@ -172,7 +172,10 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		//DebugPrint("%d(%d) handleAppendReply failed, from %d(%d). which matched %d\n",
 		//	rf.me, rf.raftLog.commited, reply.From, reply.Commited, pr.matched)
 		if reply.Commited + 1 < pr.next {
-		//if reply.Commited + 1 < pr.next && reply.Commited > pr.matched {
+			//if reply.Commited + 1 < pr.next && reply.Commited > pr.matched {
+			if reply.Commited < pr.matched && !pr.PassAppendTimeout() {
+				return
+			}
 			pr.next = reply.Commited + 1
 			rf.appendMore(reply.From)
 		}

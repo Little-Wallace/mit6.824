@@ -100,12 +100,12 @@ func (cl *RaftClient) AppendAsync(msg *AppendMessage) {
 		go cl.sendAppendEntries(*msg)
 	} else if msg.MsgType == MsgSnapshot {
 		idx := int32(msg.Snap.Index)
-		if idx <= atomic.LoadInt32(&cl.pendingSnapshot) {
-			DebugPrint("skip snapshot %d, because there is a bigger one: %d\n", idx, atomic.LoadInt32(&cl.pendingSnapshot))
-			return
-		}
-		cl.lastAppendTime = time.Now()
+		//if idx <= atomic.LoadInt32(&cl.pendingSnapshot) {
+		////	DebugPrint("skip snapshot %d, because there is a bigger one: %d\n", idx, atomic.LoadInt32(&cl.pendingSnapshot))
+		////	return
+		//}
 		atomic.StoreInt32(&cl.pendingSnapshot, idx)
+		cl.lastAppendTime = time.Now()
 		go cl.sendSnapshot(*msg)
 	}
 }

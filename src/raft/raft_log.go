@@ -190,7 +190,6 @@ func (log *UnstableLog) GetUnstableEntries() []Entry {
 	return entries
 }
 
-
 func (log *UnstableLog) MaybeCommit(index int) bool {
 	if index > log.commited && index < log.size{
 		log.commited = index
