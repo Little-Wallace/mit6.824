@@ -22,6 +22,10 @@ func (rf *Raft) AppendEntries(args *AppendMessage, reply* AppendReply) {
 		return
 	}
 
+	if rf.stop {
+		return
+	}
+
 	rf.leader = args.From
 	rf.lastElection = time.Now()
 	rf.state = Follower
@@ -149,6 +153,9 @@ func (rf *Raft) handleAppendReply(reply* AppendReply) {
 		return
 	}
 	if rf.leader != rf.me || rf.state != Leader{
+		return
+	}
+	if rf.stop {
 		return
 	}
 	pr := &rf.clients[reply.From]

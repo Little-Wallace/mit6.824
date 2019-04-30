@@ -4,7 +4,6 @@ import (
 	"labrpc"
 	"time"
 	"sync/atomic"
-	"fmt"
 )
 
 type RaftClient struct {
@@ -39,16 +38,14 @@ func (cl *RaftClient) Stop() {
 }
 
 func (cl *RaftClient) sendSnapshot(msg AppendMessage) bool {
-	start := time.Now()
 	var reply AppendReply
 	ok := cl.peer.Call("Raft.AppendEntries", &msg, &reply)
 	for !ok && atomic.LoadInt32(&cl.stop) == 0 &&
 		atomic.LoadInt32(&cl.pendingSnapshot) == int32(msg.Snap.Index) {
-		fmt.Printf("send AppendSnapshot failed from %d to %d, try again\n", msg.From, msg.To)
+		DPrintf("send AppendSnapshot failed from %d to %d, try again\n", msg.From, msg.To)
 		ok = cl.peer.Call("Raft.AppendEntries", &msg, &reply)
-		//time.Sleep(time.Duration(10) * time.Millisecond)
+		time.Sleep(time.Duration(100) * time.Millisecond)
 	}
-	calcRuntime(start, "send AppendSnapshot")
 	if ok && atomic.LoadInt32(&cl.stop) == 0 {
 		DebugPrint("send append msg success from %d to %d\n", msg.From, msg.To)
 		cl.raft.msgChan <- reply

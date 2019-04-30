@@ -51,9 +51,6 @@ func (s *Storage) ApplySnapshot(snap *raft.Snapshot) error {
 	defer s.mu.Unlock()
 	for i := 0; i < size; i += 2 {
 		s.kv[arrs[i]] = arrs[i + 1]
-		if arrs[i] < "3" && len(arrs[i]) <= 2 {
-			DPrintf("recover: kv[%s]=%s\n", arrs[i], arrs[i + 1])
-		}
 	}
 	for _, k := range ts {
 		s.commands[k] = time.Now()
@@ -71,9 +68,6 @@ func (s *Storage) Bytes() []byte {
 		size ++
 		arrs[size] = v
 		size ++
-		if k < "3" && len(k) <= 2 {
-			DPrintf("store: kv[%s]=%s\n", k, v)
-		}
 	}
 	DPrintf("store a map , size : %d, arra len: %d, size: %d\n", len(s.kv), len(arrs), size)
 	now := time.Now()

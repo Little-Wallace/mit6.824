@@ -23,7 +23,6 @@ import (
 	"time"
 	"bytes"
 	"labgob"
-	"sync/atomic"
 	"fmt"
 )
 // import "bytes"
@@ -47,10 +46,11 @@ type ApplyMsg struct {
 	Command      interface{}
 	CommandIndex int
 	LogIndex     int
+	Term         int
 	Snap *Snapshot
 }
 
-var debugMode = true
+var debugMode = false
 
 func DebugPrint(format string, a ...interface{}) {
 	if debugMode {
@@ -98,9 +98,10 @@ type Raft struct {
 	applySM    chan ApplyMsg
 	msgChan    chan AppendReply
 	voteChan    chan RequestVoteReply
+	stopChan    chan bool
 	raftLog	  UnstableLog
 	votes	  []int
-	stop 		int32
+	stop 		bool
 	failCount   int32
 }
 
@@ -187,6 +188,9 @@ func (rf *Raft) recoverFromPersist(data []byte) {
 
 func (rf *Raft) recoverFromSnapshot(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
+		rf.mu.Lock()
+		rf.stop = false
+		rf.mu.Unlock()
 		return
 	}
 	rf.mu.Lock()
@@ -206,6 +210,7 @@ func (rf *Raft) recoverFromSnapshot(data []byte) {
 		}
 		rf.raftLog.applied += 1
 	}
+	rf.stop = false
 	rf.mu.Unlock()
 	DebugPrint("%d recover snapshot(%d) applied: %d, commit: %d, %d\n",
 		rf.me, len(s.Data), rf.raftLog.applied, rf.raftLog.commited, rf.raftLog.size)
@@ -221,8 +226,13 @@ func (rf *Raft) recoverFromSnapshot(data []byte) {
 // example RequestVote RPC handler.
 //
 func calcRuntime(t time.Time, f string) {
-	now := time.Now()
-	DebugPrint("%s cost %f millisecond\n", f, now.Sub(t).Seconds() * 1000)
+	//now := time.Now()
+	//log.Printf("%s cost %f millisecond\n", f, now.Sub(t).Seconds() * 1000)
+	//log.Printf()
+}
+
+func CalcRuntime(t time.Time, f string) {
+	calcRuntime(t, f)
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -383,18 +393,24 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) CreateSnapshot(data []byte, index int, maxRaftState int)  {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DebugPrint("%d create snapshot which index to %d, snapshot size: %d, log size: %d, last index %d, applied: %d, commit: %d\n",
-		rf.me, index, len(data),rf.raftLog.Size(), rf.raftLog.GetLastIndex(), rf.raftLog.applied, rf.raftLog.commited)
+	if rf.stop {
+		return
+	}
 	if rf.raftLog.snapshot != nil && rf.raftLog.snapshot.Index >= index {
 		return
 	}
-	if atomic.LoadInt32(&rf.stop) != 0 || rf.persister.RaftStateSize() < maxRaftState {
+	if rf.stop || rf.persister.RaftStateSize() < maxRaftState {
 		return
 	}
+	DebugPrint("%d create snapshot which index to %d, snapshot size: %d, log size: %d, last index %d, applied: %d, commit: %d\n",
+		rf.me, index, len(data),rf.raftLog.Size(), rf.raftLog.GetLastIndex(), rf.raftLog.applied, rf.raftLog.commited)
+
+	start := time.Now()
 	term := rf.raftLog.GetEntry(index).Term
 	s := &Snapshot{index, rf.raftLog.GetEntry(index).DataIndex, term, data}
 	rf.raftLog.SetSnapshot(s)
 	rf.persister.SaveStateAndSnapshot(rf.getRaftStateData(), s.Bytes())
+	calcRuntime(start, "CreateSnapshot")
 	return
 }
 
@@ -404,6 +420,7 @@ func (rf *Raft) createApplyMsg(e Entry) ApplyMsg {
 		applyMsg.CommandIndex = e.DataIndex
 		applyMsg.LogIndex = e.Index
 		applyMsg.Command = e.Data
+		applyMsg.Term = e.Term
 		applyMsg.CommandValid = true
 		//DebugPrint("%d Apply entre : term: %d, index: %d, value : %d\n", rf.me, e.Term, applyMsg.CommandIndex, tmp)
 	} else {
@@ -486,18 +503,20 @@ func (rf *Raft) checkVote(from int, term int, msgType MessageType, accept* bool)
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
-	atomic.StoreInt32(&rf.stop, 1)
 	for idx := range rf.clients {
 		if idx != rf.me {
 			rf.clients[idx].Stop()
 		}
 	}
 	DebugPrint("Kill Raft %d, fail rpc: %d\n", rf.me, rf.failCount)
-	for ts := 1; atomic.LoadInt32(&rf.stop) != 2 && ts < 20; ts ++ {
-		time.Sleep(1000 * time.Millisecond)
-	}
+	//for ts := 1; atomic.LoadInt32(&rf.stop) != 2 && ts < 20; ts ++ {
+	//	time.Sleep(1000 * time.Millisecond)
+	//}
+	rf.mu.Lock()
+	rf.stop = true
+	rf.mu.Unlock()
+	rf.stopChan <- true
 	DebugPrint("Kill Raft %d result %d\n", rf.me, rf.stop)
-	delete(electionTimes, rf.rdElectionTimeout)
 }
 
 //
@@ -648,8 +667,10 @@ func (rf *Raft) maybeLose() {
 func (rf *Raft) maybeChange() {
 	state := HardState{rf.term, rf.vote, rf.raftLog.commited, rf.raftLog.Size()}
 	if state != rf.prevState{
+		start := time.Now()
 		rf.persist()
 		rf.prevState = state
+		calcRuntime(start, "maybeChange")
 	}
 }
 
@@ -712,13 +733,11 @@ func (rf *Raft) tick_follower() {
 
 func (rf *Raft) step() {
 	rf.recoverFromSnapshot(rf.persister.ReadSnapshot())
-	for atomic.LoadInt32(&rf.stop) == 0{
+	defer DebugPrint("Stop Raft: %d\n", rf.me)
+	for {
 		rf.tick()
 		select {
 		case msg := <- rf.voteChan : {
-			if atomic.LoadInt32(&rf.stop) != 0 {
-				break
-			}
 			if rf.state != Candidate && rf.state != PreCandidate && rf.leader != -1 {
 				break
 			}
@@ -727,23 +746,20 @@ func (rf *Raft) step() {
 			rf.mu.Unlock()
 		}
 		case msg := <- rf.msgChan : {
-			if atomic.LoadInt32(&rf.stop) != 0 {
-				break
-			}
 			rf.mu.Lock()
 			rf.handleAppendReply(&msg)
 			rf.mu.Unlock()
+		}
+		case <- rf.stopChan: {
+			return
 		}
 		case <-time.After(time.Duration(40) * time.Millisecond): {
 			break
 		}
 		}
 	}
-	DebugPrint("Stop Raft: %d\n", rf.me)
-	atomic.StoreInt32(&rf.stop, 2)
 }
 
-var electionTimes = make(map[int32]bool)
 //var eletionTimes [2000]bool
 
 func Make(peers []*labrpc.ClientEnd, me int,
@@ -765,11 +781,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.rdElectionTimeout = 800 + 40 * int32(me)
 	rf.lastHeartBeat = time.Now()
 	rf.lastElection = time.Now()
-	rf.stop = 0
 	rf.applySM = applyCh
+	rf.stop = true
 	rf.msgChan = make(chan AppendReply, 2000)
 	rf.voteChan = make(chan RequestVoteReply, 1000)
 	rf.votes = make([]int, len(rf.peers))
+	rf.stopChan = make(chan bool)
 	// Your initialization code here.
 	rf.becomeFollower(0, -1)
 	rf.recoverFromPersist(persister.ReadRaftState())
