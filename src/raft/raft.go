@@ -516,7 +516,7 @@ func (rf *Raft) Kill() {
 	rf.stop = true
 	rf.mu.Unlock()
 	rf.stopChan <- true
-	DebugPrint("Kill Raft %d result %d\n", rf.me, rf.stop)
+	DebugPrint("Kill Raft %d\n", rf.me)
 }
 
 //

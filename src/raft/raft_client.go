@@ -44,7 +44,7 @@ func (cl *RaftClient) sendSnapshot(msg AppendMessage) bool {
 		atomic.LoadInt32(&cl.pendingSnapshot) == int32(msg.Snap.Index) {
 		DPrintf("send AppendSnapshot failed from %d to %d, try again\n", msg.From, msg.To)
 		ok = cl.peer.Call("Raft.AppendEntries", &msg, &reply)
-		time.Sleep(time.Duration(100) * time.Millisecond)
+		time.Sleep(time.Duration(50) * time.Millisecond)
 	}
 	if ok && atomic.LoadInt32(&cl.stop) == 0 {
 		DebugPrint("send append msg success from %d to %d\n", msg.From, msg.To)
